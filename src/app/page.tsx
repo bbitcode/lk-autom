@@ -20,9 +20,11 @@ export default function Home() {
   const [genType, setGenType] = useState<"url" | "idea">("url");
   const [genInput, setGenInput] = useState("");
   const [genMember, setGenMember] = useState<TeamMember>("Daniel");
+  const [genModel, setGenModel] = useState("claude-sonnet-4-20250514");
+  const [genFocus, setGenFocus] = useState("");
 
   // Tabs
-  const [tab, setTab] = useState<"posts" | "generate" | "settings">("posts");
+  const [tab, setTab] = useState<"posts" | "generate" | "discover" | "settings">("posts");
 
   const fetchPosts = useCallback(async () => {
     setLoading(true);
@@ -52,6 +54,8 @@ export default function Home() {
           type: genType,
           [genType === "url" ? "url" : "idea"]: genInput,
           member_name: genMember,
+          model: genModel,
+          focus: genType === "url" ? genFocus : undefined,
         }),
       });
       const data = await res.json();
@@ -131,7 +135,7 @@ export default function Home() {
 
       {/* Tabs */}
       <div className="flex gap-1 mb-6 border-b border-zinc-200">
-        {(["posts", "generate", "settings"] as const).map((t) => (
+        {(["posts", "generate", "discover", "settings"] as const).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -141,7 +145,7 @@ export default function Home() {
                 : "text-zinc-400 hover:text-zinc-600"
             }`}
           >
-            {t === "generate" ? "Generate" : t === "settings" ? "Settings" : "Posts"}
+            {t === "generate" ? "Generate" : t === "discover" ? "Discover" : t === "settings" ? "Settings" : "Posts"}
           </button>
         ))}
       </div>
@@ -234,13 +238,22 @@ export default function Home() {
 
           <div className="space-y-4">
             {genType === "url" ? (
-              <input
-                type="url"
-                placeholder="Paste a URL to generate a post from..."
-                value={genInput}
-                onChange={(e) => setGenInput(e.target.value)}
-                className="w-full px-4 py-3 border border-zinc-200 rounded-lg text-sm"
-              />
+              <div className="space-y-3">
+                <input
+                  type="url"
+                  placeholder="Paste a URL to generate a post from..."
+                  value={genInput}
+                  onChange={(e) => setGenInput(e.target.value)}
+                  className="w-full px-4 py-3 border border-zinc-200 rounded-lg text-sm"
+                />
+                <textarea
+                  placeholder="Additional focus or angle (optional)... e.g. 'Focus on the monetization strategy and how it relates to what we do at Aloud'"
+                  value={genFocus}
+                  onChange={(e) => setGenFocus(e.target.value)}
+                  rows={2}
+                  className="w-full px-4 py-3 border border-zinc-200 rounded-lg text-sm resize-none"
+                />
+              </div>
             ) : (
               <textarea
                 placeholder="Describe your post idea..."
@@ -251,19 +264,33 @@ export default function Home() {
               />
             )}
 
-            <div className="flex items-center gap-3">
-              <label className="text-sm text-zinc-500">Tone of:</label>
-              <select
-                value={genMember}
-                onChange={(e) => setGenMember(e.target.value as TeamMember)}
-                className="px-3 py-1.5 border border-zinc-200 rounded-md text-sm bg-white"
-              >
-                {TEAM.map((name) => (
-                  <option key={name} value={name}>
-                    {name}
-                  </option>
-                ))}
-              </select>
+            <div className="flex items-center gap-6">
+              <div className="flex items-center gap-2">
+                <label className="text-sm text-zinc-500">Tone of:</label>
+                <select
+                  value={genMember}
+                  onChange={(e) => setGenMember(e.target.value as TeamMember)}
+                  className="px-3 py-1.5 border border-zinc-200 rounded-md text-sm bg-white"
+                >
+                  {TEAM.map((name) => (
+                    <option key={name} value={name}>
+                      {name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex items-center gap-2">
+                <label className="text-sm text-zinc-500">Model:</label>
+                <select
+                  value={genModel}
+                  onChange={(e) => setGenModel(e.target.value)}
+                  className="px-3 py-1.5 border border-zinc-200 rounded-md text-sm bg-white"
+                >
+                  <option value="claude-sonnet-4-20250514">Sonnet (buen balance)</option>
+                  <option value="claude-opus-4-20250514">Opus (mejor calidad, más caro)</option>
+                  <option value="claude-haiku-4-5-20251001">Haiku (rápido y barato)</option>
+                </select>
+              </div>
             </div>
 
             <button
@@ -275,6 +302,17 @@ export default function Home() {
             </button>
           </div>
         </div>
+      )}
+
+      {/* Discover tab */}
+      {tab === "discover" && (
+        <DiscoverPanel
+          onGenerate={(url: string) => {
+            setGenInput(url);
+            setGenType("url");
+            setTab("generate");
+          }}
+        />
       )}
 
       {/* Settings tab */}
@@ -297,6 +335,8 @@ function PostCard({
   const [editing, setEditing] = useState(false);
   const [editEn, setEditEn] = useState(post.content_en || "");
   const [editEs, setEditEs] = useState(post.content_es || "");
+  const [refineInput, setRefineInput] = useState("");
+  const [refining, setRefining] = useState(false);
   const [showLang, setShowLang] = useState<"en" | "es">(
     post.content_en ? "en" : "es"
   );
@@ -304,6 +344,31 @@ function PostCard({
   const content = showLang === "en" ? post.content_en : post.content_es;
   const copyToClipboard = () => {
     if (content) navigator.clipboard.writeText(content);
+  };
+
+  const handleRefine = async () => {
+    if (!refineInput.trim()) return;
+    setRefining(true);
+    try {
+      const res = await fetch("/api/refine", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          post_id: post.id,
+          instruction: refineInput,
+        }),
+      });
+      const data = await res.json();
+      if (data.error) {
+        alert("Error: " + data.error);
+      } else {
+        setRefineInput("");
+        onUpdate(post.id, {});
+      }
+    } catch {
+      alert("Error refining post");
+    }
+    setRefining(false);
   };
 
   return (
@@ -409,6 +474,28 @@ function PostCard({
       )}
 
       {!editing && (
+        <div className="flex gap-2 mb-3">
+          <input
+            type="text"
+            placeholder="Refine: e.g. 'make it shorter', 'more casual tone', 'add a question at the end'..."
+            value={refineInput}
+            onChange={(e) => setRefineInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && refineInput.trim()) handleRefine();
+            }}
+            className="flex-1 px-3 py-1.5 border border-zinc-200 rounded-md text-xs"
+          />
+          <button
+            onClick={handleRefine}
+            disabled={refining || !refineInput.trim()}
+            className="px-3 py-1.5 bg-zinc-900 text-white text-xs rounded-md hover:bg-zinc-700 disabled:opacity-50 shrink-0"
+          >
+            {refining ? "Refining..." : "Refine"}
+          </button>
+        </div>
+      )}
+
+      {!editing && (
         <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-zinc-100">
           <button
             onClick={copyToClipboard}
@@ -433,6 +520,25 @@ function PostCard({
             <option value="ready">Ready</option>
             <option value="used">Used</option>
           </select>
+          <div className="flex items-center gap-0.5">
+            {[1, 2, 3, 4, 5].map((star) => (
+              <button
+                key={star}
+                onClick={() =>
+                  onUpdate(post.id, {
+                    rating: post.rating === star ? null : star,
+                  } as Partial<Post>)
+                }
+                className={`text-sm ${
+                  post.rating && star <= post.rating
+                    ? "text-yellow-400"
+                    : "text-zinc-200 hover:text-yellow-300"
+                }`}
+              >
+                ★
+              </button>
+            ))}
+          </div>
           <select
             value={post.used_by || ""}
             onChange={(e) =>
@@ -455,6 +561,207 @@ function PostCard({
           >
             Delete
           </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------- Discover Panel ----------
+
+interface Article {
+  title: string;
+  link: string;
+  source: string;
+  date: string;
+  snippet: string;
+  relevance_score?: number;
+}
+
+function ArticleList({
+  articles,
+  onGenerate,
+}: {
+  articles: Article[];
+  onGenerate: (url: string) => void;
+}) {
+  if (articles.length === 0) {
+    return <p className="text-zinc-400 text-sm">No relevant articles found.</p>;
+  }
+
+  return (
+    <div className="space-y-3">
+      {articles.map((article, i) => (
+        <div
+          key={`${article.link}-${i}`}
+          className="border border-zinc-200 rounded-lg p-4 bg-white flex justify-between gap-4"
+        >
+          <div className="min-w-0 flex-1">
+            <a
+              href={article.link}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-sm font-medium hover:underline line-clamp-2"
+            >
+              {article.title}
+            </a>
+            {article.snippet && (
+              <p className="text-xs text-zinc-400 mt-1 line-clamp-2">
+                {article.snippet}
+              </p>
+            )}
+            <div className="flex items-center gap-2 mt-2">
+              <span className="text-xs text-zinc-300">{article.source}</span>
+              {article.date && (
+                <span className="text-xs text-zinc-300">
+                  {new Date(article.date).toLocaleDateString()}
+                </span>
+              )}
+              {article.relevance_score && (
+                <span
+                  className={`text-xs px-1.5 py-0.5 rounded ${
+                    article.relevance_score >= 8
+                      ? "bg-green-100 text-green-700"
+                      : "bg-yellow-100 text-yellow-700"
+                  }`}
+                >
+                  {article.relevance_score}/10
+                </span>
+              )}
+            </div>
+          </div>
+          <button
+            onClick={() => onGenerate(article.link)}
+            className="px-3 py-1.5 bg-zinc-900 text-white text-xs rounded-md hover:bg-zinc-700 shrink-0 h-fit"
+          >
+            Use
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function DiscoverPanel({ onGenerate }: { onGenerate: (url: string) => void }) {
+  const [subtab, setSubtab] = useState<"feeds" | "sites">("feeds");
+
+  // RSS feeds state
+  const [feedArticles, setFeedArticles] = useState<Article[]>([]);
+  const [feedLoading, setFeedLoading] = useState(false);
+  const [feedLoaded, setFeedLoaded] = useState(false);
+
+  // Scraped sites state
+  const [siteArticles, setSiteArticles] = useState<Article[]>([]);
+  const [siteLoading, setSiteLoading] = useState(false);
+  const [siteLoaded, setSiteLoaded] = useState(false);
+
+  const loadFeeds = useCallback(() => {
+    setFeedLoading(true);
+    fetch("/api/discover")
+      .then((r) => r.json())
+      .then((data) => {
+        setFeedArticles(Array.isArray(data) ? data : []);
+        setFeedLoading(false);
+        setFeedLoaded(true);
+      })
+      .catch(() => {
+        setFeedLoading(false);
+        setFeedLoaded(true);
+      });
+  }, []);
+
+  const loadSites = useCallback(() => {
+    setSiteLoading(true);
+    fetch("/api/discover/scrape", { method: "POST" })
+      .then((r) => r.json())
+      .then((data) => {
+        setSiteArticles(Array.isArray(data.articles) ? data.articles : []);
+        setSiteLoading(false);
+        setSiteLoaded(true);
+      })
+      .catch(() => {
+        setSiteLoading(false);
+        setSiteLoaded(true);
+      });
+  }, []);
+
+  // Load feeds on first render
+  useEffect(() => {
+    if (!feedLoaded) loadFeeds();
+  }, [feedLoaded, loadFeeds]);
+
+  return (
+    <div>
+      {/* Sub-tabs */}
+      <div className="flex items-center justify-between mb-5">
+        <div className="flex gap-1">
+          <button
+            onClick={() => setSubtab("feeds")}
+            className={`px-4 py-2 text-sm rounded-md ${
+              subtab === "feeds"
+                ? "bg-zinc-900 text-white"
+                : "bg-zinc-100 text-zinc-600"
+            }`}
+          >
+            RSS Feeds
+          </button>
+          <button
+            onClick={() => {
+              setSubtab("sites");
+              if (!siteLoaded) loadSites();
+            }}
+            className={`px-4 py-2 text-sm rounded-md ${
+              subtab === "sites"
+                ? "bg-zinc-900 text-white"
+                : "bg-zinc-100 text-zinc-600"
+            }`}
+          >
+            Scraped Sites
+          </button>
+        </div>
+        <button
+          onClick={async () => {
+            if (subtab === "feeds") {
+              await fetch("/api/discover/refresh", { method: "POST" });
+              loadFeeds();
+            } else {
+              loadSites();
+            }
+          }}
+          disabled={subtab === "feeds" ? feedLoading : siteLoading}
+          className="px-3 py-1.5 text-xs border border-zinc-200 rounded-md hover:bg-zinc-50 disabled:opacity-50"
+        >
+          {(subtab === "feeds" ? feedLoading : siteLoading)
+            ? "Loading..."
+            : "Refresh"}
+        </button>
+      </div>
+
+      {/* Feeds tab */}
+      {subtab === "feeds" && (
+        <div>
+          <p className="text-xs text-zinc-400 mb-4">
+            Google News, TechCrunch & Hacker News — filtered by relevance (7+). Cached 8 hours.
+          </p>
+          {feedLoading ? (
+            <p className="text-zinc-400 text-sm">Loading feeds...</p>
+          ) : (
+            <ArticleList articles={feedArticles} onGenerate={onGenerate} />
+          )}
+        </div>
+      )}
+
+      {/* Sites tab */}
+      {subtab === "sites" && (
+        <div>
+          <p className="text-xs text-zinc-400 mb-4">
+            Creator Spotlight, The Publish Press & Digiday — scraped with Firecrawl, filtered by relevance (7+).
+          </p>
+          {siteLoading ? (
+            <p className="text-zinc-400 text-sm">Scraping sites (this takes ~15s)...</p>
+          ) : (
+            <ArticleList articles={siteArticles} onGenerate={onGenerate} />
+          )}
         </div>
       )}
     </div>

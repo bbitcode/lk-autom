@@ -36,7 +36,7 @@ async function scrapeUrl(url: string): Promise<string> {
 
 export async function POST(req: NextRequest) {
   try {
-    const { type, url, idea, member_name } = await req.json();
+    const { type, url, idea, member_name, model, focus } = await req.json();
     const supabase = getSupabase();
 
     const { data: companyContext } = await supabase
@@ -53,14 +53,28 @@ export async function POST(req: NextRequest) {
       memberProfile = data;
     }
 
-    const systemPrompt = buildSystemPrompt(companyContext || [], memberProfile);
+    // Fetch highly-rated posts (4-5 stars) as style examples
+    const { data: ratedPosts } = await supabase
+      .from("posts")
+      .select("content_en, content_es, rating")
+      .gte("rating", 4)
+      .not("rating", "is", null);
+
+    const ratedExamples = (ratedPosts || [])
+      .map((p) => ({
+        content: (p.content_en || p.content_es || "").slice(0, 1500),
+        rating: p.rating as number,
+      }))
+      .filter((e) => e.content.length > 0);
+
+    const systemPrompt = buildSystemPrompt(companyContext || [], memberProfile, ratedExamples);
 
     let userPrompt: string;
     let sourceUrl: string | null = null;
 
     if (type === "url" && url) {
       const scrapedContent = await scrapeUrl(url);
-      userPrompt = buildGenerateFromUrlPrompt(url, scrapedContent);
+      userPrompt = buildGenerateFromUrlPrompt(url, scrapedContent, focus);
       sourceUrl = url;
     } else if (type === "idea" && idea) {
       userPrompt = buildGenerateFromIdeaPrompt(idea);
@@ -72,7 +86,7 @@ export async function POST(req: NextRequest) {
     }
 
     const message = await anthropic.messages.create({
-      model: "claude-sonnet-4-20250514",
+      model: model || "claude-sonnet-4-20250514",
       max_tokens: 1500,
       system: systemPrompt,
       messages: [{ role: "user", content: userPrompt }],

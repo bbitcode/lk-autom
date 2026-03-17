@@ -12,6 +12,7 @@ export interface Post {
   source_summary: string | null;
   status: PostStatus;
   used_by: TeamMember | null;
+  rating: number | null;
   tags: string[];
   created_at: string;
   updated_at: string;
