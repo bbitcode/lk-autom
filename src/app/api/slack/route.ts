@@ -4,32 +4,19 @@ import crypto from "crypto";
 import { WebClient } from "@slack/web-api";
 import { processSlackMessage } from "@/lib/slack-bot";
 
+export const maxDuration = 60;
+
 const slackClient = new WebClient(process.env.SLACK_BOT_TOKEN);
 const signingSecret = process.env.SLACK_SIGNING_SECRET!;
 
-// Track processed events to avoid duplicates
 const processedEvents = new Set<string>();
 
-function verifySlackSignature(
-  body: string,
-  timestamp: string,
-  signature: string
-): boolean {
+function verifySlackSignature(body: string, timestamp: string, signature: string): boolean {
   const fiveMinutesAgo = Math.floor(Date.now() / 1000) - 60 * 5;
   if (parseInt(timestamp) < fiveMinutesAgo) return false;
-
   const sigBasestring = `v0:${timestamp}:${body}`;
-  const mySignature =
-    "v0=" +
-    crypto
-      .createHmac("sha256", signingSecret)
-      .update(sigBasestring)
-      .digest("hex");
-
-  return crypto.timingSafeEqual(
-    Buffer.from(mySignature),
-    Buffer.from(signature)
-  );
+  const mySignature = "v0=" + crypto.createHmac("sha256", signingSecret).update(sigBasestring).digest("hex");
+  return crypto.timingSafeEqual(Buffer.from(mySignature), Buffer.from(signature));
 }
 
 export async function POST(request: NextRequest) {
@@ -42,12 +29,10 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
 
-  // Handle Slack URL verification challenge (before signature check)
   if (body.type === "url_verification") {
     return NextResponse.json({ challenge: body.challenge });
   }
 
-  // Verify Slack signature for all other requests
   const timestamp = request.headers.get("x-slack-request-timestamp") || "";
   const signature = request.headers.get("x-slack-signature") || "";
 
@@ -55,32 +40,26 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
   }
 
-  // Handle events
   if (body.type === "event_callback") {
     const event = body.event as Record<string, unknown>;
 
-    // Ignore bot messages to avoid loops
     if (event.bot_id || event.subtype === "bot_message") {
       return NextResponse.json({ ok: true });
     }
 
-    // Deduplicate events (Slack may retry)
     const eventId = (body.event_id as string) || `${event.ts}-${event.channel}`;
     if (processedEvents.has(eventId)) {
       return NextResponse.json({ ok: true });
     }
     processedEvents.add(eventId);
-    // Clean up old events to prevent memory leak
     if (processedEvents.size > 1000) {
       const entries = Array.from(processedEvents);
       entries.slice(0, 500).forEach((e) => processedEvents.delete(e));
     }
 
-    // Only respond to app_mention or direct messages
     if (event.type === "app_mention" || event.type === "message") {
-      // Use after() to keep the function alive on Vercel after responding to Slack
       after(async () => {
-        await processAndReply(event as { text: string; channel: string; ts: string; thread_ts?: string });
+        await processAndReply(event as unknown as SlackEvent);
       });
     }
   }
@@ -88,30 +67,57 @@ export async function POST(request: NextRequest) {
   return NextResponse.json({ ok: true });
 }
 
-async function processAndReply(event: {
+interface SlackFile {
+  url_private_download?: string;
+  url_private?: string;
+  name: string;
+  mimetype: string;
+}
+
+interface SlackEvent {
   text: string;
   channel: string;
   ts: string;
   thread_ts?: string;
-}) {
+  files?: SlackFile[];
+}
+
+async function processAndReply(event: SlackEvent) {
   try {
-    // Send "thinking" indicator
     await slackClient.reactions.add({
       channel: event.channel,
       name: "hourglass_flowing_sand",
       timestamp: event.ts,
     });
 
-    const response = await processSlackMessage(event.text);
+    // Extract file info for reference image uploads
+    const files = event.files
+      ?.filter((f) => f.mimetype?.startsWith("image/"))
+      .map((f) => ({
+        url: f.url_private_download || f.url_private || "",
+        name: f.name,
+      }))
+      .filter((f) => f.url) || [];
 
-    // Reply in thread if it was a threaded message, otherwise create a new thread
-    await slackClient.chat.postMessage({
-      channel: event.channel,
-      text: response,
-      thread_ts: event.thread_ts || event.ts,
-    });
+    const result = await processSlackMessage(event.text, event.channel, files.length > 0 ? files : undefined);
 
-    // Remove thinking indicator
+    // If there's an image buffer, upload it to Slack
+    if (result.imageBuffer) {
+      await slackClient.filesUploadV2({
+        channel_id: event.channel,
+        thread_ts: event.thread_ts || event.ts,
+        file: result.imageBuffer,
+        filename: "generated-image.png",
+        initial_comment: result.text,
+      });
+    } else {
+      await slackClient.chat.postMessage({
+        channel: event.channel,
+        text: result.text,
+        thread_ts: event.thread_ts || event.ts,
+      });
+    }
+
     await slackClient.reactions.remove({
       channel: event.channel,
       name: "hourglass_flowing_sand",
@@ -119,7 +125,6 @@ async function processAndReply(event: {
     });
   } catch (error) {
     console.error("Error replying to Slack:", error);
-
     await slackClient.chat.postMessage({
       channel: event.channel,
       text: "Hubo un error procesando tu mensaje. Intenta de nuevo.",
