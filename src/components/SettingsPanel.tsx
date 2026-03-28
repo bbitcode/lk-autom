@@ -433,16 +433,49 @@ export function SettingsPanel() {
       {/* All Team Members (edit tone/samples) */}
       <div>
         <h2 className="text-lg font-semibold mb-4">All Team Members</h2>
-        <p className="text-xs text-zinc-400 mb-4">Edit tone and writing samples here. Assign members to accounts above.</p>
+        <p className="text-xs text-zinc-400 mb-4">Create, edit, or delete members. Assign them to accounts above.</p>
+
+        {/* Create new member globally */}
+        <div className="border border-dashed border-zinc-300 rounded-lg p-4 mb-4">
+          <h3 className="text-sm font-medium mb-2">Create new member</h3>
+          <NewMemberForm onSubmit={async (name, lang) => {
+            setSaving(true);
+            const res = await fetch("/api/settings", {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ type: "create_member", name, language: lang }),
+            });
+            const data = await res.json();
+            if (!data.error) setAllMembers((prev) => [...prev, data]);
+            setSaving(false);
+          }} />
+        </div>
+
         <div className="space-y-4">
           {allMembers.map((member, i) => (
             <div key={member.id} className="border border-zinc-200 rounded-lg p-4 bg-white">
-              <div className="flex items-center gap-3 mb-3">
-                <span className="font-medium">{member.name}</span>
-                <select value={member.language} onChange={(e) => { const updated = [...allMembers]; updated[i] = { ...member, language: e.target.value }; setAllMembers(updated); }} className="text-xs border border-zinc-200 rounded px-2 py-1 bg-white">
-                  <option value="en">English</option>
-                  <option value="es">Spanish</option>
-                </select>
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-3">
+                  <span className="font-medium">{member.name}</span>
+                  <select value={member.language} onChange={(e) => { const updated = [...allMembers]; updated[i] = { ...member, language: e.target.value }; setAllMembers(updated); }} className="text-xs border border-zinc-200 rounded px-2 py-1 bg-white">
+                    <option value="en">English</option>
+                    <option value="es">Spanish</option>
+                  </select>
+                </div>
+                <button
+                  onClick={async () => {
+                    if (!confirm(`Delete ${member.name}? This will remove them from all accounts.`)) return;
+                    await fetch("/api/settings", {
+                      method: "PATCH",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ type: "delete_member", id: member.id }),
+                    });
+                    setAllMembers((prev) => prev.filter((m) => m.id !== member.id));
+                  }}
+                  className="text-xs text-red-400 hover:text-red-600"
+                >
+                  Delete
+                </button>
               </div>
               <div className="space-y-3">
                 <div>
