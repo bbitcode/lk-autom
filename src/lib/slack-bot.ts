@@ -5,6 +5,7 @@ import {
   buildGenerateFromUrlPrompt,
   buildGenerateFromIdeaPrompt,
 } from "./prompts";
+import { getCachedArticles, fetchAndCacheNews } from "./discover";
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
@@ -28,6 +29,19 @@ interface SlackAction {
 }
 
 const TEAM_MEMBERS = ["Daniel", "Natalia", "Tomás", "Isa", "Jorge"];
+
+function parseJsonFromResponse(text: string): Record<string, string> | null {
+  // Try to match a JSON block (with or without markdown code fences)
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+  const raw = fenced ? fenced[1] : text;
+  const jsonMatch = raw.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) return null;
+  try {
+    return JSON.parse(jsonMatch[0]);
+  } catch {
+    return null;
+  }
+}
 
 export async function interpretMessage(text: string): Promise<SlackAction> {
   const response = await anthropic.messages.create({
@@ -138,10 +152,8 @@ export async function handleGenerateFromUrl(
 
   const responseText =
     message.content[0].type === "text" ? message.content[0].text : "";
-  const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) throw new Error("Failed to parse AI response");
-
-  const generated = JSON.parse(jsonMatch[0]);
+  const generated = parseJsonFromResponse(responseText);
+  if (!generated) throw new Error("Failed to parse AI response: " + responseText.slice(0, 200));
 
   const { data: post, error } = await supabase
     .from("posts")
@@ -214,10 +226,8 @@ export async function handleGenerateFromIdea(
 
   const responseText =
     message.content[0].type === "text" ? message.content[0].text : "";
-  const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) throw new Error("Failed to parse AI response");
-
-  const generated = JSON.parse(jsonMatch[0]);
+  const generated = parseJsonFromResponse(responseText);
+  if (!generated) throw new Error("Failed to parse AI response: " + responseText.slice(0, 200));
 
   const { data: post, error } = await supabase
     .from("posts")
@@ -241,24 +251,21 @@ export async function handleGenerateFromIdea(
 }
 
 export async function handleDiscoverNews(): Promise<string> {
-  const supabase = getSupabase();
+  // Try cache first
+  let articles = await getCachedArticles();
 
-  const cutoff = new Date(Date.now() - 8 * 60 * 60 * 1000).toISOString();
-  const { data } = await supabase
-    .from("discover_cache")
-    .select("*")
-    .eq("source_type", "rss")
-    .gte("cached_at", cutoff)
-    .gte("relevance_score", 7)
-    .order("relevance_score", { ascending: false })
-    .limit(10);
-
-  if (!data || data.length === 0) {
-    return "No hay noticias en caché. Usa la app web para refrescar el feed, o espera a que se actualice automáticamente.";
+  // If no cached articles, fetch fresh ones
+  if (!articles || articles.length === 0) {
+    articles = await fetchAndCacheNews();
   }
 
+  if (!articles || articles.length === 0) {
+    return "No encontré noticias relevantes en este momento. Intenta de nuevo más tarde.";
+  }
+
+  const top = articles.slice(0, 10);
   let result = "*Noticias relevantes:*\n\n";
-  for (const article of data) {
+  for (const article of top) {
     result += `• *${article.title}* (${article.source}, score: ${article.relevance_score}/10)\n  ${article.link}\n\n`;
   }
   result +=
