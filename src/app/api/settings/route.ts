@@ -1,12 +1,16 @@
 import { getSupabase } from "@/lib/supabase";
 import { NextRequest, NextResponse } from "next/server";
 
-export async function GET() {
+export async function GET(req: NextRequest) {
+  const { searchParams } = req.nextUrl;
+  const account_id = searchParams.get("account_id");
   const supabase = getSupabase();
 
   const [membersRes, contextRes] = await Promise.all([
     supabase.from("team_members").select("*").order("name"),
-    supabase.from("company_context").select("*").order("key"),
+    account_id
+      ? supabase.from("company_context").select("*").eq("account_id", account_id).order("key")
+      : supabase.from("company_context").select("*").order("key"),
   ]);
 
   return NextResponse.json({
@@ -34,10 +38,13 @@ export async function PATCH(req: NextRequest) {
   }
 
   if (body.type === "context") {
-    const { key, value } = body;
+    const { key, value, account_id } = body;
+    if (!account_id) {
+      return NextResponse.json({ error: "account_id is required" }, { status: 400 });
+    }
     const { data, error } = await supabase
       .from("company_context")
-      .upsert({ key, value }, { onConflict: "key" })
+      .upsert({ key, value, account_id }, { onConflict: "account_id,key" })
       .select()
       .single();
 

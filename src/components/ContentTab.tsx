@@ -37,6 +37,8 @@ export function ContentTab({ account }: { account: Account | null }) {
   const [imageFormat, setImageFormat] = useState<ImageFormat>("1:1");
   const [imageModel, setImageModel] = useState<ImageModel>("imagen-3");
   const [useBrandStyle, setUseBrandStyle] = useState(true);
+  const [referenceFile, setReferenceFile] = useState<File | null>(null);
+  const [referencePreview, setReferencePreview] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
   const [result, setResult] = useState<ContentItem | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -51,6 +53,13 @@ export function ContentTab({ account }: { account: Account | null }) {
     setResult(null);
 
     try {
+      // Convert reference image to base64 if present
+      let referenceImageBase64: string | undefined;
+      if (referenceFile) {
+        const buffer = await referenceFile.arrayBuffer();
+        referenceImageBase64 = Buffer.from(buffer).toString("base64");
+      }
+
       const res = await fetch("/api/content/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -65,6 +74,7 @@ export function ContentTab({ account }: { account: Account | null }) {
           image_format: imageFormat,
           image_model: imageModel,
           use_brand_style: useBrandStyle,
+          reference_image_base64: referenceImageBase64,
         }),
       });
       const data = await res.json();
@@ -254,6 +264,41 @@ export function ContentTab({ account }: { account: Account | null }) {
               />
               <span className="text-xs text-zinc-500">Use brand style</span>
             </label>
+          </div>
+
+          {/* Reference image (one-time, not saved) */}
+          <div>
+            <label className="text-xs text-zinc-400 mb-1 block">
+              Reference image (optional, one-time — won&apos;t be saved as permanent reference)
+            </label>
+            <div className="flex items-center gap-3">
+              <input
+                type="file"
+                accept="image/*"
+                onChange={(e) => {
+                  const f = e.target.files?.[0] || null;
+                  setReferenceFile(f);
+                  if (f) {
+                    const url = URL.createObjectURL(f);
+                    setReferencePreview(url);
+                  } else {
+                    setReferencePreview(null);
+                  }
+                }}
+                className="text-xs"
+              />
+              {referencePreview && (
+                <div className="relative">
+                  <img src={referencePreview} alt="Reference" className="w-16 h-16 object-cover rounded border border-zinc-200" />
+                  <button
+                    onClick={() => { setReferenceFile(null); setReferencePreview(null); }}
+                    className="absolute -top-1 -right-1 bg-red-500 text-white text-xs w-4 h-4 rounded-full leading-none"
+                  >
+                    x
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}

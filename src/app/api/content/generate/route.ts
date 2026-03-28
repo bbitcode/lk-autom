@@ -22,6 +22,7 @@ export async function POST(req: NextRequest) {
       image_format,
       image_model = "imagen-3",
       use_brand_style = true,
+      reference_image_base64,
     } = body as {
       account_id: string;
       platform: Platform;
@@ -33,6 +34,7 @@ export async function POST(req: NextRequest) {
       image_format?: ImageFormat;
       image_model?: ImageModel;
       use_brand_style?: boolean;
+      reference_image_base64?: string;
     };
 
     if (!account_id || !platform || !content_type) {
@@ -55,8 +57,8 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: "copy_input is required for copy generation" }, { status: 400 });
       }
 
-      // Get company context and member profile for system prompt
-      const { data: companyContext } = await supabase.from("company_context").select("*");
+      // Get account-specific company context and member profile for system prompt
+      const { data: companyContext } = await supabase.from("company_context").select("*").eq("account_id", account_id);
       let memberProfile = null;
       if (member_name) {
         const { data } = await supabase
@@ -96,6 +98,7 @@ export async function POST(req: NextRequest) {
         format: resolvedFormat as ImageFormat,
         model: image_model,
         useBrandStyle: use_brand_style,
+        referenceImageBase64: reference_image_base64,
       });
 
       imagePublicUrl = result.publicUrl;

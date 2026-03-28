@@ -597,18 +597,56 @@ export async function processSlackMessage(
   try {
     const cleanText = text.replace(/<@[A-Z0-9]+>/g, "").trim();
 
-    // Handle file uploads as reference images
-    if (files && files.length > 0 && cleanText.length < 200) {
-      const results: string[] = [];
-      for (const file of files) {
-        const response = await fetch(file.url, {
-          headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` },
+    // Handle file uploads
+    if (files && files.length > 0) {
+      const file = files[0];
+      const response = await fetch(file.url, {
+        headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` },
+      });
+      const buffer = Buffer.from(await response.arrayBuffer());
+      const base64 = buffer.toString("base64");
+
+      // If text contains a generation prompt → use image as one-time reference for generation
+      const hasGenerationIntent = cleanText && (
+        /^\/imagen\s/i.test(cleanText) ||
+        /^\/contenido\s/i.test(cleanText) ||
+        /genera|crea|haz|diseña|make|create|generate/i.test(cleanText)
+      );
+
+      if (hasGenerationIntent && cleanText) {
+        // Use as one-time example for image generation
+        const prompt = cleanText.replace(/^\/imagen\s+/i, "").replace(/^\/contenido\s+/i, "").trim();
+        const accountId = await getActiveAccountId(channelId);
+        if (!accountId) return { text: "No hay cuenta activa. Usa `/cuenta [slug]` primero." };
+
+        const result = await generateContentImage({
+          prompt,
+          accountId,
+          format: "1:1",
+          model: "imagen-3",
+          useBrandStyle: true,
+          referenceImageBase64: base64,
         });
-        const buffer = Buffer.from(await response.arrayBuffer());
-        const msg = await handleUploadReference(buffer, file.name, channelId, cleanText || undefined);
-        results.push(msg);
+
+        const supabase = getSupabase();
+        const { data: item } = await supabase.from("content_items").insert({
+          account_id: accountId, platform: "instagram", content_type: "image_only",
+          image_storage_path: result.storagePath, image_public_url: result.publicUrl,
+          image_format: "1:1", image_model: "imagen-3", image_prompt: result.enrichedPrompt,
+          status: "draft", tags: [], generated_by: "slack",
+        }).select().single();
+
+        if (item) await supabase.from("image_generations").update({ content_item_id: item.id }).eq("id", result.generationId);
+
+        const imgResponse = await fetch(result.publicUrl);
+        const imageBuffer = Buffer.from(await imgResponse.arrayBuffer());
+
+        return { text: `*Imagen generada usando tu referencia* (ID: \`${item?.id?.slice(0, 8) || "?"}\`)`, imageBuffer };
       }
-      return { text: results.join("\n") };
+
+      // Otherwise → save as permanent reference
+      const msg = await handleUploadReference(buffer, file.name, channelId, cleanText || undefined);
+      return { text: msg };
     }
 
     if (!cleanText) {

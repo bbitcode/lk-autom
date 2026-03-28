@@ -10,6 +10,7 @@ interface GenerateImageOptions {
   model?: ImageModel;
   contentItemId?: string;
   useBrandStyle?: boolean;
+  referenceImageBase64?: string;
 }
 
 interface GenerateImageResult {
@@ -89,15 +90,27 @@ export async function generateContentImage(
     model = "imagen-3",
     contentItemId,
     useBrandStyle = true,
+    referenceImageBase64,
   } = options;
 
-  // Step 1: Enrich prompt with brand context if requested
+  // Step 1: Enrich prompt with brand context and/or reference image
   let finalPrompt = prompt;
+
+  // If there's a one-time reference image, analyze it first
+  if (referenceImageBase64) {
+    const imageAnalysis = await generateText(
+      "You analyze reference images to extract visual style cues for image generation. Describe the style, colors, composition, mood, and aesthetic in 2-3 sentences. Be specific and visual.",
+      `Analyze this reference image and describe its visual style so I can generate a similar image. The user wants to create: "${prompt}"`,
+      { model: "flash", maxTokens: 200 }
+    );
+    finalPrompt = `${prompt}\n\nVisual style reference: ${imageAnalysis}`;
+  }
+
   if (useBrandStyle) {
     const account = await getAccountContext(accountId);
     if (account) {
       const refs = await getReferenceDescriptions(accountId);
-      finalPrompt = await enrichPromptWithBrand(prompt, account, refs);
+      finalPrompt = await enrichPromptWithBrand(finalPrompt, account, refs);
     }
   }
 
