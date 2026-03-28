@@ -1,7 +1,17 @@
 {
   "permissions": {
     "allow": [
-      "Bash(curl:*)"
+      "Bash(curl:*)",
+      "Bash(git commit:*)",
+      "Bash(npm install:*)",
+      "Bash(git push:*)",
+      "Bash(command -v vercel)",
+      "Bash(vercel --version)",
+      "Bash(vercel whoami:*)",
+      "Bash(grep -r discover_cache /Users/Daniel/Desktop/LK --include=*.ts --include=*.tsx --include=*.sql)",
+      "Bash(npx tsc:*)",
+      "Bash(git add:*)",
+      "Bash(npm uninstall:*)"
     ]
   }
 }
