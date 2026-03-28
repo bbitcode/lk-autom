@@ -33,24 +33,30 @@ function verifySlackSignature(
 
 export async function POST(request: NextRequest) {
   const rawBody = await request.text();
-  const timestamp = request.headers.get("x-slack-request-timestamp") || "";
-  const signature = request.headers.get("x-slack-signature") || "";
 
-  // Verify Slack signature
-  if (!verifySlackSignature(rawBody, timestamp, signature)) {
-    return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
+  let body: Record<string, unknown>;
+  try {
+    body = JSON.parse(rawBody);
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
 
-  const body = JSON.parse(rawBody);
-
-  // Handle Slack URL verification challenge
+  // Handle Slack URL verification challenge (before signature check)
   if (body.type === "url_verification") {
     return NextResponse.json({ challenge: body.challenge });
   }
 
+  // Verify Slack signature for all other requests
+  const timestamp = request.headers.get("x-slack-request-timestamp") || "";
+  const signature = request.headers.get("x-slack-signature") || "";
+
+  if (!verifySlackSignature(rawBody, timestamp, signature)) {
+    return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
+  }
+
   // Handle events
   if (body.type === "event_callback") {
-    const event = body.event;
+    const event = body.event as Record<string, unknown>;
 
     // Ignore bot messages to avoid loops
     if (event.bot_id || event.subtype === "bot_message") {
@@ -58,7 +64,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Deduplicate events (Slack may retry)
-    const eventId = body.event_id || `${event.ts}-${event.channel}`;
+    const eventId = (body.event_id as string) || `${event.ts}-${event.channel}`;
     if (processedEvents.has(eventId)) {
       return NextResponse.json({ ok: true });
     }
@@ -73,7 +79,7 @@ export async function POST(request: NextRequest) {
     if (event.type === "app_mention" || event.type === "message") {
       // Respond immediately to Slack (3 second timeout requirement)
       // Process in background
-      processAndReply(event).catch((err) =>
+      processAndReply(event as { text: string; channel: string; ts: string; thread_ts?: string }).catch((err) =>
         console.error("Slack processing error:", err)
       );
     }
