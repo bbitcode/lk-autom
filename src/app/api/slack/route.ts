@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { after } from "next/server";
 import crypto from "crypto";
 import { WebClient } from "@slack/web-api";
 import { processSlackMessage } from "@/lib/slack-bot";
@@ -77,11 +78,10 @@ export async function POST(request: NextRequest) {
 
     // Only respond to app_mention or direct messages
     if (event.type === "app_mention" || event.type === "message") {
-      // Respond immediately to Slack (3 second timeout requirement)
-      // Process in background
-      processAndReply(event as { text: string; channel: string; ts: string; thread_ts?: string }).catch((err) =>
-        console.error("Slack processing error:", err)
-      );
+      // Use after() to keep the function alive on Vercel after responding to Slack
+      after(async () => {
+        await processAndReply(event as { text: string; channel: string; ts: string; thread_ts?: string });
+      });
     }
   }
 
