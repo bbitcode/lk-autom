@@ -1,4 +1,3 @@
-import Anthropic from "@anthropic-ai/sdk";
 import { getSupabase } from "./supabase";
 import {
   buildSystemPrompt,
@@ -6,10 +5,7 @@ import {
   buildGenerateFromIdeaPrompt,
 } from "./prompts";
 import { getCachedArticles, fetchAndCacheNews } from "./discover";
-
-const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY,
-});
+import { generateText } from "./gemini";
 
 interface SlackAction {
   intent:
@@ -31,7 +27,6 @@ interface SlackAction {
 const TEAM_MEMBERS = ["Daniel", "Natalia", "Tomás", "Isa", "Jorge"];
 
 function parseJsonFromResponse(text: string): Record<string, string> | null {
-  // Try to match a JSON block (with or without markdown code fences)
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
   const raw = fenced ? fenced[1] : text;
   const jsonMatch = raw.match(/\{[\s\S]*\}/);
@@ -44,10 +39,8 @@ function parseJsonFromResponse(text: string): Record<string, string> | null {
 }
 
 export async function interpretMessage(text: string): Promise<SlackAction> {
-  const response = await anthropic.messages.create({
-    model: "claude-haiku-4-5-20251001",
-    max_tokens: 500,
-    system: `You are a router for a Slack bot. Analyze the user message and determine the intent.
+  const responseText = await generateText(
+    `You are a router for a Slack bot. Analyze the user message and determine the intent.
 
 Available intents:
 - "generate_from_url": User wants to generate a LinkedIn post from a URL. Extract the URL.
@@ -70,15 +63,12 @@ Return ONLY valid JSON:
   "focus": "specific angle/focus if mentioned",
   "status_filter": "draft/ready/used if filtering posts"
 }`,
-    messages: [{ role: "user", content: text }],
-  });
+    text,
+    { model: "flash", maxTokens: 500 }
+  );
 
-  const responseText =
-    response.content[0].type === "text" ? response.content[0].text : "{}";
   const match = responseText.match(/\{[\s\S]*\}/);
-  if (!match) {
-    return { intent: "general_chat" };
-  }
+  if (!match) return { intent: "general_chat" };
 
   try {
     return JSON.parse(match[0]) as SlackAction;
@@ -143,15 +133,8 @@ export async function handleGenerateFromUrl(
   const scrapedContent = await scrapeUrl(url);
   const userPrompt = buildGenerateFromUrlPrompt(url, scrapedContent, focus);
 
-  const message = await anthropic.messages.create({
-    model: "claude-sonnet-4-20250514",
-    max_tokens: 1500,
-    system: systemPrompt,
-    messages: [{ role: "user", content: userPrompt }],
-  });
+  const responseText = await generateText(systemPrompt, userPrompt);
 
-  const responseText =
-    message.content[0].type === "text" ? message.content[0].text : "";
   const generated = parseJsonFromResponse(responseText);
   if (!generated) throw new Error("Failed to parse AI response: " + responseText.slice(0, 200));
 
@@ -217,15 +200,8 @@ export async function handleGenerateFromIdea(
   );
   const userPrompt = buildGenerateFromIdeaPrompt(idea);
 
-  const message = await anthropic.messages.create({
-    model: "claude-sonnet-4-20250514",
-    max_tokens: 1500,
-    system: systemPrompt,
-    messages: [{ role: "user", content: userPrompt }],
-  });
+  const responseText = await generateText(systemPrompt, userPrompt);
 
-  const responseText =
-    message.content[0].type === "text" ? message.content[0].text : "";
   const generated = parseJsonFromResponse(responseText);
   if (!generated) throw new Error("Failed to parse AI response: " + responseText.slice(0, 200));
 
@@ -251,10 +227,8 @@ export async function handleGenerateFromIdea(
 }
 
 export async function handleDiscoverNews(): Promise<string> {
-  // Try cache first
   let articles = await getCachedArticles();
 
-  // If no cached articles, fetch fresh ones
   if (!articles || articles.length === 0) {
     articles = await fetchAndCacheNews();
   }
@@ -287,15 +261,9 @@ export async function handleRefinePost(
 
   if (error || !post) return `No encontré el post con ID \`${postId}\`.`;
 
-  const message = await anthropic.messages.create({
-    model: "claude-sonnet-4-20250514",
-    max_tokens: 1500,
-    system:
-      "You rewrite LinkedIn posts based on user instructions. Keep the same general topic but adjust based on the instruction. Do NOT mention or promote Aloud unless the user explicitly asks for it.",
-    messages: [
-      {
-        role: "user",
-        content: `Here are the current versions of a LinkedIn post:
+  const responseText = await generateText(
+    "You rewrite LinkedIn posts based on user instructions. Keep the same general topic but adjust based on the instruction. Do NOT mention or promote Aloud unless the user explicitly asks for it.",
+    `Here are the current versions of a LinkedIn post:
 
 ENGLISH:
 ${post.content_en || "N/A"}
@@ -306,17 +274,11 @@ ${post.content_es || "N/A"}
 INSTRUCTION: ${instruction}
 
 Rewrite both versions following the instruction. Format as JSON:
-{"content_en": "...", "content_es": "..."}`,
-      },
-    ],
-  });
+{"content_en": "...", "content_es": "..."}`
+  );
 
-  const text =
-    message.content[0].type === "text" ? message.content[0].text : "";
-  const jsonMatch = text.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) throw new Error("Failed to parse AI response");
-
-  const generated = JSON.parse(jsonMatch[0]);
+  const generated = parseJsonFromResponse(responseText);
+  if (!generated) throw new Error("Failed to parse AI response: " + responseText.slice(0, 200));
 
   const { data: updated, error: updateError } = await supabase
     .from("posts")
@@ -378,10 +340,8 @@ export async function handleGeneralChat(userMessage: string): Promise<string> {
     (companyContext || []).map((c) => [c.key, c.value])
   );
 
-  const response = await anthropic.messages.create({
-    model: "claude-sonnet-4-20250514",
-    max_tokens: 1000,
-    system: `You are the Aloud Content Lab assistant on Slack. You help the team with content strategy for LinkedIn.
+  return await generateText(
+    `You are the Aloud Content Lab assistant on Slack. You help the team with content strategy for LinkedIn.
 
 Company context:
 - What we do: ${contextMap.company_description || "N/A"}
@@ -400,17 +360,13 @@ If the user seems to want to generate a post, remind them they can:
 - Share a URL to generate a post from an article
 - Describe an idea to generate a post from scratch
 - Ask for latest news to find inspiration`,
-    messages: [{ role: "user", content: userMessage }],
-  });
-
-  return response.content[0].type === "text"
-    ? response.content[0].text
-    : "No pude procesar tu mensaje.";
+    userMessage,
+    { maxTokens: 1000 }
+  );
 }
 
 // Parse slash commands — returns an action if matched, null if not
 function parseCommand(text: string): SlackAction | null {
-  // /generar <URL>
   const generateMatch = text.match(/^\/generar\s+(https?:\/\/\S+)(?:\s+para\s+(\w+))?/i);
   if (generateMatch) {
     const memberName = generateMatch[2];
@@ -421,7 +377,6 @@ function parseCommand(text: string): SlackAction | null {
     };
   }
 
-  // /idea <texto> [para <miembro>]
   const ideaMatch = text.match(/^\/idea\s+(.+?)(?:\s+para\s+(\w+)\s*$)?/i);
   if (ideaMatch) {
     const memberName = ideaMatch[2];
@@ -432,12 +387,10 @@ function parseCommand(text: string): SlackAction | null {
     };
   }
 
-  // /noticias
   if (/^\/noticias\s*$/i.test(text)) {
     return { intent: "discover_news" };
   }
 
-  // /refinar <ID> <instrucción>
   const refineMatch = text.match(/^\/refinar\s+([a-f0-9-]+)\s+(.+)/i);
   if (refineMatch) {
     return {
@@ -447,7 +400,6 @@ function parseCommand(text: string): SlackAction | null {
     };
   }
 
-  // /posts [status]
   const postsMatch = text.match(/^\/posts(?:\s+(draft|ready|used))?\s*$/i);
   if (postsMatch) {
     return {
@@ -456,7 +408,6 @@ function parseCommand(text: string): SlackAction | null {
     };
   }
 
-  // /ayuda
   if (/^\/ayuda\s*$/i.test(text)) {
     return { intent: "general_chat" };
   }
@@ -480,18 +431,15 @@ También puedes escribir en lenguaje natural y te entiendo igual.`;
 
 export async function processSlackMessage(text: string): Promise<string> {
   try {
-    // Remove bot mention from text
     const cleanText = text.replace(/<@[A-Z0-9]+>/g, "").trim();
 
     if (!cleanText) {
       return "Hola! Soy el bot de Aloud Content Lab.\n\n" + HELP_MESSAGE;
     }
 
-    // Try slash commands first (fast, no API call)
     const command = parseCommand(cleanText);
 
     if (command) {
-      // /ayuda shortcut
       if (command.intent === "general_chat" && /^\/ayuda/i.test(cleanText)) {
         return HELP_MESSAGE;
       }
@@ -518,7 +466,6 @@ export async function processSlackMessage(text: string): Promise<string> {
       }
     }
 
-    // No command matched — use AI interpreter (natural language)
     const action = await interpretMessage(cleanText);
 
     switch (action.intent) {

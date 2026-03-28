@@ -1,16 +1,12 @@
 import Parser from "rss-parser";
-import Anthropic from "@anthropic-ai/sdk";
 import { getSupabase } from "./supabase";
+import { generateText } from "./gemini";
 
 const parser = new Parser({
   timeout: 10000,
   headers: {
     "User-Agent": "Mozilla/5.0 (compatible; AloudBot/1.0)",
   },
-});
-
-const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY,
 });
 
 const KEYWORDS = [
@@ -82,10 +78,8 @@ export async function scoreArticles(articles: Article[]): Promise<Article[]> {
     .map((a, i) => `${i}. ${a.title} [${a.source}]`)
     .join("\n");
 
-  const response = await anthropic.messages.create({
-    model: "claude-haiku-4-5-20251001",
-    max_tokens: 1000,
-    system: `You score news articles for relevance to Aloud, a product studio that builds digital products for content creators (courses, newsletters, communities, apps, monetization tools).
+  const text = await generateText(
+    `You score news articles for relevance to Aloud, a product studio that builds digital products for content creators (courses, newsletters, communities, apps, monetization tools).
 
 Score each article 1-10:
 - 8-10: Directly about creator economy, creator monetization, newsletter/podcast/community platforms, digital product launches for creators
@@ -93,16 +87,10 @@ Score each article 1-10:
 - 1-4: Unrelated (general tech, politics, sports, local news, entertainment gossip)
 
 Return ONLY a JSON array of scores in order, like [8, 3, 7, ...]`,
-    messages: [
-      {
-        role: "user",
-        content: `Score these articles:\n${titlesBlock}`,
-      },
-    ],
-  });
+    `Score these articles:\n${titlesBlock}`,
+    { model: "flash", maxTokens: 1000 }
+  );
 
-  const text =
-    response.content[0].type === "text" ? response.content[0].text : "[]";
   const match = text.match(/\[[\s\S]*\]/);
   if (!match) return articles;
 

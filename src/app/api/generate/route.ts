@@ -1,15 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import Anthropic from "@anthropic-ai/sdk";
 import { getSupabase } from "@/lib/supabase";
 import {
   buildSystemPrompt,
   buildGenerateFromUrlPrompt,
   buildGenerateFromIdeaPrompt,
 } from "@/lib/prompts";
-
-const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY,
-});
+import { generateText } from "@/lib/gemini";
 
 async function scrapeUrl(url: string): Promise<string> {
   const response = await fetch("https://api.firecrawl.dev/v1/scrape", {
@@ -36,7 +32,7 @@ async function scrapeUrl(url: string): Promise<string> {
 
 export async function POST(req: NextRequest) {
   try {
-    const { type, url, idea, member_name, model, focus } = await req.json();
+    const { type, url, idea, member_name, focus } = await req.json();
     const supabase = getSupabase();
 
     const { data: companyContext } = await supabase
@@ -53,7 +49,6 @@ export async function POST(req: NextRequest) {
       memberProfile = data;
     }
 
-    // Fetch highly-rated posts (4-5 stars) as style examples
     const { data: ratedPosts } = await supabase
       .from("posts")
       .select("content_en, content_es, rating")
@@ -85,15 +80,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const message = await anthropic.messages.create({
-      model: model || "claude-sonnet-4-20250514",
-      max_tokens: 1500,
-      system: systemPrompt,
-      messages: [{ role: "user", content: userPrompt }],
-    });
-
-    const responseText =
-      message.content[0].type === "text" ? message.content[0].text : "";
+    const responseText = await generateText(systemPrompt, userPrompt);
 
     const jsonMatch = responseText.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
