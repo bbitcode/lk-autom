@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   Account,
   ContentItem,
@@ -9,10 +9,13 @@ import {
   ImageFormat,
   ImageModel,
   Language,
-  TeamMember,
 } from "@/lib/types";
 
-const TEAM: TeamMember[] = ["Daniel", "Natalia", "Tomás", "Isa", "Jorge"];
+interface MemberOption {
+  id: string;
+  name: string;
+  language: string;
+}
 
 const FORMATS: { value: ImageFormat; label: string; icon: string }[] = [
   { value: "1:1", label: "Square", icon: "1:1" },
@@ -32,7 +35,19 @@ export function ContentTab({ account }: { account: Account | null }) {
   const [contentType, setContentType] = useState<ContentType>("copy_and_image");
   const [copyInput, setCopyInput] = useState("");
   const [copyLanguage, setCopyLanguage] = useState<Language>("es");
-  const [memberName, setMemberName] = useState<TeamMember>("Daniel");
+  const [memberName, setMemberName] = useState("");
+  const [accountMembersList, setAccountMembersList] = useState<MemberOption[]>([]);
+
+  useEffect(() => {
+    if (!account) return;
+    fetch(`/api/accounts/${account.id}/members`)
+      .then((r) => r.json())
+      .then((data) => {
+        const list = Array.isArray(data) ? data : [];
+        setAccountMembersList(list);
+        if (list.length > 0 && !memberName) setMemberName(list[0].name);
+      });
+  }, [account]); // eslint-disable-line react-hooks/exhaustive-deps
   const [imagePrompt, setImagePrompt] = useState("");
   const [imageFormat, setImageFormat] = useState<ImageFormat>("1:1");
   const [imageModel, setImageModel] = useState<ImageModel>("imagen-3");
@@ -193,11 +208,12 @@ export function ContentTab({ account }: { account: Account | null }) {
               <label className="text-xs text-zinc-400">Tone of:</label>
               <select
                 value={memberName}
-                onChange={(e) => setMemberName(e.target.value as TeamMember)}
+                onChange={(e) => setMemberName(e.target.value)}
                 className="px-2 py-1 border border-zinc-200 rounded text-xs bg-white"
               >
-                {TEAM.map((name) => (
-                  <option key={name} value={name}>{name}</option>
+                {accountMembersList.length === 0 && <option value="">No members assigned</option>}
+                {accountMembersList.map((m) => (
+                  <option key={m.id} value={m.name}>{m.name}</option>
                 ))}
               </select>
             </div>

@@ -25,14 +25,14 @@ interface ReferenceImage {
 }
 
 export function SettingsPanel() {
-  const [members, setMembers] = useState<MemberData[]>([]);
+  const [allMembers, setAllMembers] = useState<MemberData[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [saving, setSaving] = useState(false);
 
-  // Per-account context
+  // Per-account state
   const [accountContexts, setAccountContexts] = useState<Record<string, ContextData[]>>({});
-  // Per-account references
   const [accountRefs, setAccountRefs] = useState<Record<string, ReferenceImage[]>>({});
+  const [accountMembers, setAccountMembers] = useState<Record<string, MemberData[]>>({});
   const [expandedAccount, setExpandedAccount] = useState<string | null>(null);
 
   // New account form
@@ -44,13 +44,12 @@ export function SettingsPanel() {
   useEffect(() => {
     fetch("/api/settings")
       .then((r) => r.json())
-      .then((data) => setMembers(data.members || []));
+      .then((data) => setAllMembers(data.members || []));
     fetch("/api/accounts")
       .then((r) => r.json())
       .then((data) => {
         const list = Array.isArray(data) ? data : [];
         setAccounts(list);
-        // Load context for each account
         list.forEach((a: Account) => loadAccountContext(a.id));
       });
   }, []);
@@ -65,6 +64,44 @@ export function SettingsPanel() {
     const res = await fetch(`/api/accounts/${accountId}/references`);
     const data = await res.json();
     setAccountRefs((prev) => ({ ...prev, [accountId]: Array.isArray(data) ? data : [] }));
+  };
+
+  const loadAccountMembers = async (accountId: string) => {
+    const res = await fetch(`/api/accounts/${accountId}/members`);
+    const data = await res.json();
+    setAccountMembers((prev) => ({ ...prev, [accountId]: Array.isArray(data) ? data : [] }));
+  };
+
+  const assignMember = async (accountId: string, memberId: string) => {
+    await fetch(`/api/accounts/${accountId}/members`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "assign", member_id: memberId }),
+    });
+    loadAccountMembers(accountId);
+  };
+
+  const unassignMember = async (accountId: string, memberId: string) => {
+    await fetch(`/api/accounts/${accountId}/members`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ member_id: memberId }),
+    });
+    loadAccountMembers(accountId);
+  };
+
+  const createMemberForAccount = async (accountId: string, name: string, language: string) => {
+    const res = await fetch(`/api/accounts/${accountId}/members`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "create", name, language }),
+    });
+    const data = await res.json();
+    if (!data.error) {
+      setAllMembers((prev) => [...prev, data]);
+      loadAccountMembers(accountId);
+    }
+    return data;
   };
 
   const saveMember = async (member: MemberData) => {
@@ -178,7 +215,10 @@ export function SettingsPanel() {
                   onClick={() => {
                     const newId = isExpanded ? null : account.id;
                     setExpandedAccount(newId);
-                    if (newId) loadAccountRefs(newId);
+                    if (newId) {
+                      loadAccountRefs(newId);
+                      loadAccountMembers(newId);
+                    }
                   }}
                 >
                   <div className="flex items-center gap-2">
@@ -309,6 +349,52 @@ export function SettingsPanel() {
                       />
                     </div>
 
+                    {/* Team Members for this account */}
+                    <div>
+                      <h3 className="text-sm font-medium mb-3">Team Members (tones available)</h3>
+                      <div className="space-y-2 mb-3">
+                        {(accountMembers[account.id] || []).map((m) => (
+                          <div key={m.id} className="flex items-center justify-between bg-zinc-50 rounded-md px-3 py-2">
+                            <div className="flex items-center gap-2">
+                              <span className="text-sm font-medium">{m.name}</span>
+                              <span className="text-xs text-zinc-400">{m.language === "en" ? "EN" : "ES"}</span>
+                              {m.tone_description && <span className="text-xs text-zinc-300 truncate max-w-[200px]">{m.tone_description}</span>}
+                            </div>
+                            <button onClick={() => unassignMember(account.id, m.id)} className="text-xs text-red-400 hover:text-red-600">Remove</button>
+                          </div>
+                        ))}
+                        {(accountMembers[account.id] || []).length === 0 && (
+                          <p className="text-xs text-zinc-400">No members assigned yet.</p>
+                        )}
+                      </div>
+
+                      {/* Assign existing member */}
+                      {(() => {
+                        const assignedIds = new Set((accountMembers[account.id] || []).map((m) => m.id));
+                        const unassigned = allMembers.filter((m) => !assignedIds.has(m.id));
+                        if (unassigned.length === 0) return null;
+                        return (
+                          <div className="flex items-center gap-2 mb-3">
+                            <select id={`assign-${account.id}`} className="px-2 py-1 border border-zinc-200 rounded text-xs bg-white flex-1">
+                              {unassigned.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+                            </select>
+                            <button
+                              onClick={() => {
+                                const select = document.getElementById(`assign-${account.id}`) as HTMLSelectElement;
+                                if (select?.value) assignMember(account.id, select.value);
+                              }}
+                              className="px-3 py-1 bg-zinc-900 text-white text-xs rounded-md hover:bg-zinc-700"
+                            >
+                              Assign
+                            </button>
+                          </div>
+                        );
+                      })()}
+
+                      {/* Create new member */}
+                      <NewMemberForm onSubmit={(name, lang) => createMemberForAccount(account.id, name, lang)} />
+                    </div>
+
                     {/* Delete account */}
                     {!account.is_default && (
                       <div className="pt-3 border-t border-zinc-100">
@@ -344,15 +430,16 @@ export function SettingsPanel() {
         </div>
       </div>
 
-      {/* Team Members */}
+      {/* All Team Members (edit tone/samples) */}
       <div>
-        <h2 className="text-lg font-semibold mb-4">Team Members</h2>
-        <div className="space-y-6">
-          {members.map((member, i) => (
+        <h2 className="text-lg font-semibold mb-4">All Team Members</h2>
+        <p className="text-xs text-zinc-400 mb-4">Edit tone and writing samples here. Assign members to accounts above.</p>
+        <div className="space-y-4">
+          {allMembers.map((member, i) => (
             <div key={member.id} className="border border-zinc-200 rounded-lg p-4 bg-white">
               <div className="flex items-center gap-3 mb-3">
                 <span className="font-medium">{member.name}</span>
-                <select value={member.language} onChange={(e) => { const updated = [...members]; updated[i] = { ...member, language: e.target.value }; setMembers(updated); }} className="text-xs border border-zinc-200 rounded px-2 py-1 bg-white">
+                <select value={member.language} onChange={(e) => { const updated = [...allMembers]; updated[i] = { ...member, language: e.target.value }; setAllMembers(updated); }} className="text-xs border border-zinc-200 rounded px-2 py-1 bg-white">
                   <option value="en">English</option>
                   <option value="es">Spanish</option>
                 </select>
@@ -360,18 +447,40 @@ export function SettingsPanel() {
               <div className="space-y-3">
                 <div>
                   <label className="text-xs text-zinc-400 mb-1 block">Tone description</label>
-                  <textarea value={member.tone_description || ""} onChange={(e) => { const updated = [...members]; updated[i] = { ...member, tone_description: e.target.value }; setMembers(updated); }} rows={2} placeholder="e.g. Direct, data-driven..." className="w-full px-3 py-2 border border-zinc-200 rounded-md text-sm resize-none" />
+                  <textarea value={member.tone_description || ""} onChange={(e) => { const updated = [...allMembers]; updated[i] = { ...member, tone_description: e.target.value }; setAllMembers(updated); }} rows={2} placeholder="e.g. Direct, data-driven..." className="w-full px-3 py-2 border border-zinc-200 rounded-md text-sm resize-none" />
                 </div>
                 <div>
                   <label className="text-xs text-zinc-400 mb-1 block">Writing samples</label>
-                  <textarea value={member.writing_samples || ""} onChange={(e) => { const updated = [...members]; updated[i] = { ...member, writing_samples: e.target.value }; setMembers(updated); }} rows={4} placeholder="Paste example posts..." className="w-full px-3 py-2 border border-zinc-200 rounded-md text-sm resize-none" />
+                  <textarea value={member.writing_samples || ""} onChange={(e) => { const updated = [...allMembers]; updated[i] = { ...member, writing_samples: e.target.value }; setAllMembers(updated); }} rows={4} placeholder="Paste example posts..." className="w-full px-3 py-2 border border-zinc-200 rounded-md text-sm resize-none" />
                 </div>
-                <button onClick={() => saveMember(members[i])} disabled={saving} className="px-4 py-1.5 bg-zinc-900 text-white text-xs rounded-md hover:bg-zinc-700 disabled:opacity-50">Save</button>
+                <button onClick={() => saveMember(allMembers[i])} disabled={saving} className="px-4 py-1.5 bg-zinc-900 text-white text-xs rounded-md hover:bg-zinc-700 disabled:opacity-50">Save</button>
               </div>
             </div>
           ))}
         </div>
       </div>
+    </div>
+  );
+}
+
+function NewMemberForm({ onSubmit }: { onSubmit: (name: string, language: string) => void }) {
+  const [name, setName] = useState("");
+  const [language, setLanguage] = useState("es");
+
+  return (
+    <div className="flex items-end gap-2">
+      <input type="text" placeholder="New member name" value={name} onChange={(e) => setName(e.target.value)} className="flex-1 px-3 py-1.5 border border-zinc-200 rounded-md text-xs" />
+      <select value={language} onChange={(e) => setLanguage(e.target.value)} className="px-2 py-1.5 border border-zinc-200 rounded text-xs bg-white">
+        <option value="es">ES</option>
+        <option value="en">EN</option>
+      </select>
+      <button
+        onClick={() => { if (name.trim()) { onSubmit(name.trim(), language); setName(""); } }}
+        disabled={!name.trim()}
+        className="px-3 py-1.5 bg-zinc-900 text-white text-xs rounded-md hover:bg-zinc-700 disabled:opacity-50 shrink-0"
+      >
+        Create & Assign
+      </button>
     </div>
   );
 }
