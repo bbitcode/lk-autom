@@ -46,6 +46,22 @@ insert into company_context (key, value) values
   ('notable_clients', 'MiaWellness (1M+ seguidores), MarathonScience ($50K+ en lanzamiento), Amaluld, SustainMotion360, BITS by TUHUB, The Latino Newsletter, Extracto News.')
 on conflict (key) do nothing;
 
+-- Discover cache table
+create table if not exists discover_cache (
+  id uuid default gen_random_uuid() primary key,
+  title text not null,
+  link text unique not null,
+  source text,
+  date timestamptz,
+  snippet text,
+  relevance_score integer default 0,
+  source_type text default 'rss',
+  cached_at timestamptz default now()
+);
+
+create index if not exists idx_discover_cache_cached_at on discover_cache (cached_at);
+create index if not exists idx_discover_cache_relevance on discover_cache (relevance_score);
+
 -- Auto-update updated_at
 create or replace function update_updated_at()
 returns trigger as $$
