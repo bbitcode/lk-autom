@@ -78,8 +78,9 @@ export async function scoreArticles(articles: Article[]): Promise<Article[]> {
     .map((a, i) => `${i}. ${a.title} [${a.source}]`)
     .join("\n");
 
-  const text = await generateText(
-    `You score news articles for relevance to Aloud, a product studio that builds digital products for content creators (courses, newsletters, communities, apps, monetization tools).
+  try {
+    const text = await generateText(
+      `You score news articles for relevance to Aloud, a product studio that builds digital products for content creators (courses, newsletters, communities, apps, monetization tools).
 
 Score each article 1-10:
 - 8-10: Directly about creator economy, creator monetization, newsletter/podcast/community platforms, digital product launches for creators
@@ -87,21 +88,21 @@ Score each article 1-10:
 - 1-4: Unrelated (general tech, politics, sports, local news, entertainment gossip)
 
 Return ONLY a JSON array of scores in order, like [8, 3, 7, ...]`,
-    `Score these articles:\n${titlesBlock}`,
-    { model: "flash", maxTokens: 1000 }
-  );
+      `Score these articles:\n${titlesBlock}`,
+      { model: "flash", maxTokens: 1000 }
+    );
 
-  const match = text.match(/\[[\s\S]*\]/);
-  if (!match) return articles;
+    const match = text.match(/\[[\s\S]*\]/);
+    if (!match) return articles.map((a) => ({ ...a, relevance_score: 5 }));
 
-  try {
     const scores: number[] = JSON.parse(match[0]);
     return articles.map((a, i) => ({
       ...a,
-      relevance_score: scores[i] ?? 0,
+      relevance_score: scores[i] ?? 5,
     }));
   } catch {
-    return articles;
+    // If scoring fails (e.g. API unavailable), assign default score so articles aren't lost
+    return articles.map((a) => ({ ...a, relevance_score: 5 }));
   }
 }
 
@@ -167,7 +168,10 @@ export async function cacheArticles(articles: Article[]) {
 
 export async function fetchAndCacheNews(): Promise<Article[]> {
   const raw = await fetchFreshArticles();
+  if (raw.length === 0) return [];
   const scored = await scoreArticles(raw);
-  await cacheArticles(scored);
-  return scored.filter((a) => (a.relevance_score ?? 0) >= 7).slice(0, 30);
+  await cacheArticles(scored).catch(() => {});
+  const relevant = scored.filter((a) => (a.relevance_score ?? 0) >= 7);
+  // If scoring failed/unavailable, return most recent articles as fallback
+  return relevant.length > 0 ? relevant.slice(0, 30) : scored.slice(0, 10);
 }
