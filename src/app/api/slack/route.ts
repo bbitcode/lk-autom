@@ -88,7 +88,7 @@ async function processAndReply(event: SlackEvent) {
       channel: event.channel,
       name: "hourglass_flowing_sand",
       timestamp: event.ts,
-    });
+    }).catch(() => {});
 
     // Extract file info for reference image uploads
     const files = event.files
@@ -122,7 +122,7 @@ async function processAndReply(event: SlackEvent) {
       channel: event.channel,
       name: "hourglass_flowing_sand",
       timestamp: event.ts,
-    });
+    }).catch(() => {});
   } catch (error) {
     console.error("Error replying to Slack:", error);
     await slackClient.chat.postMessage({
