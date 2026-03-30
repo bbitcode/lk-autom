@@ -341,24 +341,51 @@ export function SettingsPanel() {
 
                     {/* Color palette */}
                     <div>
-                      <label className="text-xs text-zinc-400 mb-1 block">Color palette (comma-separated hex)</label>
-                      <div className="flex items-center gap-2">
-                        <input
-                          type="text"
-                          value={(account.color_palette || []).join(", ")}
-                          onChange={(e) => {
-                            const updated = [...accounts];
-                            updated[i] = { ...account, color_palette: e.target.value.split(",").map((c) => c.trim()).filter(Boolean) };
-                            setAccounts(updated);
-                          }}
-                          placeholder="#FF5733, #1A1A2E"
-                          className="flex-1 px-3 py-2 border border-zinc-200 rounded-md text-sm"
-                        />
-                        <div className="flex gap-1">
-                          {(account.color_palette || []).slice(0, 5).map((color, ci) => (
-                            <div key={ci} className="w-6 h-6 rounded border border-zinc-200" style={{ backgroundColor: color }} />
-                          ))}
-                        </div>
+                      <label className="text-xs text-zinc-400 mb-1 block">
+                        Color palette ({(account.color_palette || []).length}/6)
+                      </label>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {(account.color_palette || []).map((color, ci) => (
+                          <div key={ci} className="relative group flex items-center gap-1">
+                            <input
+                              type="color"
+                              value={color}
+                              onChange={(e) => {
+                                const newPalette = [...(account.color_palette || [])];
+                                newPalette[ci] = e.target.value;
+                                const updated = [...accounts];
+                                updated[i] = { ...account, color_palette: newPalette };
+                                setAccounts(updated);
+                              }}
+                              className="w-8 h-8 rounded border border-zinc-200 cursor-pointer p-0"
+                            />
+                            <span className="text-xs text-zinc-400 font-mono">{color}</span>
+                            <button
+                              onClick={() => {
+                                const newPalette = (account.color_palette || []).filter((_, j) => j !== ci);
+                                const updated = [...accounts];
+                                updated[i] = { ...account, color_palette: newPalette };
+                                setAccounts(updated);
+                              }}
+                              className="text-xs text-red-400 hover:text-red-600 opacity-0 group-hover:opacity-100 transition-opacity"
+                            >
+                              x
+                            </button>
+                          </div>
+                        ))}
+                        {(account.color_palette || []).length < 6 && (
+                          <button
+                            onClick={() => {
+                              const newPalette = [...(account.color_palette || []), "#000000"];
+                              const updated = [...accounts];
+                              updated[i] = { ...account, color_palette: newPalette };
+                              setAccounts(updated);
+                            }}
+                            className="w-8 h-8 rounded border-2 border-dashed border-zinc-300 flex items-center justify-center text-zinc-400 hover:border-zinc-400 hover:text-zinc-500 text-lg leading-none"
+                          >
+                            +
+                          </button>
+                        )}
                       </div>
                     </div>
 
