@@ -1,13 +1,12 @@
 import { generateText, generateImage } from "./gemini";
 import { uploadFile } from "./storage";
 import { getSupabase } from "./supabase";
-import type { ImageFormat, ImageModel, Account } from "./types";
+import type { ImageFormat, Account } from "./types";
 
 interface GenerateImageOptions {
   prompt: string;
   accountId: string;
   format?: ImageFormat;
-  model?: ImageModel;
   contentItemId?: string;
   useBrandStyle?: boolean;
   referenceImageBase64?: string;
@@ -102,7 +101,6 @@ export async function generateContentImage(
     prompt,
     accountId,
     format = "1:1",
-    model = "imagen-3",
     contentItemId,
     useBrandStyle = true,
     referenceImageBase64,
@@ -133,7 +131,7 @@ export async function generateContentImage(
   }
 
   // Step 2: Generate image
-  const imageBuffer = await generateImage(finalPrompt, { format, model });
+  const imageBuffer = await generateImage(finalPrompt, { format });
 
   // Step 3: Upload to storage
   const imageId = crypto.randomUUID();
@@ -158,7 +156,7 @@ export async function generateContentImage(
       account_id: accountId,
       prompt: finalPrompt,
       format,
-      model,
+      model: "nano-banana",
       storage_path: storagePath,
       public_url: publicUrl,
       is_current: true,

@@ -7,7 +7,6 @@ import {
   Platform,
   ContentType,
   ImageFormat,
-  ImageModel,
   Language,
 } from "@/lib/types";
 
@@ -22,12 +21,6 @@ const FORMATS: { value: ImageFormat; label: string; icon: string }[] = [
   { value: "4:5", label: "Vertical", icon: "4:5" },
   { value: "9:16", label: "Story", icon: "9:16" },
   { value: "16:9", label: "Landscape", icon: "16:9" },
-];
-
-const IMAGE_MODELS: { value: ImageModel; label: string; desc: string }[] = [
-  { value: "imagen-3", label: "Imagen 3", desc: "Realistic photos" },
-  { value: "imagen-4", label: "Imagen 4", desc: "Next-gen realistic" },
-  { value: "nano-banana", label: "Nano Banana", desc: "Creative / design" },
 ];
 
 export function ContentTab({ account }: { account: Account | null }) {
@@ -50,7 +43,7 @@ export function ContentTab({ account }: { account: Account | null }) {
   }, [account]); // eslint-disable-line react-hooks/exhaustive-deps
   const [imagePrompt, setImagePrompt] = useState("");
   const [imageFormat, setImageFormat] = useState<ImageFormat>("1:1");
-  const [imageModel, setImageModel] = useState<ImageModel>("imagen-3");
+  const imageModel = "nano-banana";
   const [useBrandStyle, setUseBrandStyle] = useState(true);
   const [referenceFile, setReferenceFile] = useState<File | null>(null);
   const [referencePreview, setReferencePreview] = useState<string | null>(null);
@@ -252,22 +245,6 @@ export function ContentTab({ account }: { account: Account | null }) {
                   </button>
                 ))}
               </div>
-            </div>
-
-            {/* Model */}
-            <div>
-              <label className="text-xs text-zinc-400 mb-1 block">Model</label>
-              <select
-                value={imageModel}
-                onChange={(e) => setImageModel(e.target.value as ImageModel)}
-                className="px-3 py-1.5 border border-zinc-200 rounded-md text-xs bg-white"
-              >
-                {IMAGE_MODELS.map((m) => (
-                  <option key={m.value} value={m.value}>
-                    {m.label} — {m.desc}
-                  </option>
-                ))}
-              </select>
             </div>
 
             {/* Brand style toggle */}

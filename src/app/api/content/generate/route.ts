@@ -4,7 +4,7 @@ import { generateText } from "@/lib/gemini";
 import { generateContentImage } from "@/lib/image-gen";
 import { buildPlatformCopyPrompt, PLATFORMS } from "@/lib/platforms";
 import { buildSystemPrompt } from "@/lib/prompts";
-import type { Platform, ContentType, ImageFormat, ImageModel, Language } from "@/lib/types";
+import type { Platform, ContentType, ImageFormat, Language } from "@/lib/types";
 
 export const maxDuration = 60;
 
@@ -20,7 +20,7 @@ export async function POST(req: NextRequest) {
       member_name,
       image_prompt,
       image_format,
-      image_model = "imagen-3",
+      image_model: _image_model,
       use_brand_style = true,
       reference_image_base64,
     } = body as {
@@ -32,7 +32,7 @@ export async function POST(req: NextRequest) {
       member_name?: string;
       image_prompt?: string;
       image_format?: ImageFormat;
-      image_model?: ImageModel;
+      image_model?: string;
       use_brand_style?: boolean;
       reference_image_base64?: string;
     };
@@ -96,7 +96,6 @@ export async function POST(req: NextRequest) {
         prompt: promptForImage,
         accountId: account_id,
         format: resolvedFormat as ImageFormat,
-        model: image_model,
         useBrandStyle: use_brand_style,
         referenceImageBase64: reference_image_base64,
       });
@@ -118,7 +117,7 @@ export async function POST(req: NextRequest) {
         image_storage_path: imageStoragePath,
         image_public_url: imagePublicUrl,
         image_format: content_type !== "copy_only" ? resolvedFormat : null,
-        image_model: content_type !== "copy_only" ? image_model : null,
+        image_model: content_type !== "copy_only" ? "nano-banana" : null,
         image_prompt: finalImagePrompt,
         status: "draft",
         tags: [],

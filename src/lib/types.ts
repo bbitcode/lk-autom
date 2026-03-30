@@ -40,7 +40,7 @@ export type ContentType = "copy_only" | "image_only" | "copy_and_image";
 
 export type ImageFormat = "1:1" | "4:5" | "9:16" | "16:9";
 
-export type ImageModel = "imagen-3" | "imagen-4" | "nano-banana";
+export type ImageModel = "nano-banana";
 
 export interface Account {
   id: string;

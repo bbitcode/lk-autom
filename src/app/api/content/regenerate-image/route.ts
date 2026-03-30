@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSupabase } from "@/lib/supabase";
 import { generateContentImage } from "@/lib/image-gen";
-import type { ImageFormat, ImageModel } from "@/lib/types";
+import type { ImageFormat } from "@/lib/types";
 
 export const maxDuration = 60;
 
@@ -24,7 +24,6 @@ export async function POST(req: NextRequest) {
       prompt: prompt || item.image_prompt || "Creative social media visual",
       accountId: item.account_id,
       format: (image_format || item.image_format || "1:1") as ImageFormat,
-      model: (image_model || item.image_model || "imagen-3") as ImageModel,
       contentItemId: content_item_id,
       useBrandStyle: true,
     });
@@ -37,7 +36,7 @@ export async function POST(req: NextRequest) {
         image_public_url: result.publicUrl,
         image_prompt: result.enrichedPrompt,
         image_format: image_format || item.image_format,
-        image_model: image_model || item.image_model,
+        image_model: "nano-banana",
       })
       .eq("id", content_item_id)
       .select()

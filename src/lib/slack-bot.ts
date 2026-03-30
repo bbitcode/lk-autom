@@ -9,7 +9,7 @@ import { generateText } from "./gemini";
 import { generateContentImage } from "./image-gen";
 import { buildPlatformCopyPrompt } from "./platforms";
 import { uploadFile } from "./storage";
-import type { ImageFormat, ImageModel, Platform } from "./types";
+import type { ImageFormat, Platform } from "./types";
 
 interface SlackAction {
   intent:
@@ -37,7 +37,7 @@ interface SlackAction {
   platform?: Platform;
   image_prompt?: string;
   image_format?: ImageFormat;
-  image_model?: ImageModel;
+  image_model?: string;
   content_item_id?: string;
 }
 
@@ -130,7 +130,7 @@ Return ONLY valid JSON:
   "platform": "linkedin/instagram/twitter if mentioned",
   "image_prompt": "image description if generating image",
   "image_format": "1:1/4:5/9:16/16:9 if specified",
-  "image_model": "imagen-3/imagen-4/nano-banana if specified",
+  "image_model": "nano-banana",
   "content_item_id": "content item ID if mentioned"
 }`,
     text,
@@ -276,7 +276,6 @@ export async function handleGenerateImage(
   prompt: string,
   channelId: string,
   format?: ImageFormat,
-  model?: ImageModel,
   accountSlug?: string
 ): Promise<{ text: string; imageBuffer?: Buffer }> {
   const supabase = getSupabase();
@@ -296,7 +295,6 @@ export async function handleGenerateImage(
     prompt,
     accountId,
     format: format || "1:1",
-    model: model || "imagen-3",
     useBrandStyle: true,
   });
 
@@ -310,7 +308,7 @@ export async function handleGenerateImage(
       image_storage_path: result.storagePath,
       image_public_url: result.publicUrl,
       image_format: format || "1:1",
-      image_model: model || "imagen-3",
+      image_model: "nano-banana",
       image_prompt: result.enrichedPrompt,
       status: "draft",
       tags: [],
@@ -339,7 +337,6 @@ export async function handleGenerateContent(
   channelId: string,
   platform: Platform = "instagram",
   format?: ImageFormat,
-  model?: ImageModel
 ): Promise<{ text: string; imageBuffer?: Buffer }> {
   const accountId = await getActiveAccountId(channelId);
   if (!accountId) return { text: "No hay cuenta activa. Usa `/cuenta [slug]` para seleccionar una." };
@@ -357,7 +354,6 @@ export async function handleGenerateContent(
     prompt: idea,
     accountId,
     format: format || "1:1",
-    model: model || "imagen-3",
     useBrandStyle: true,
   });
 
@@ -373,7 +369,7 @@ export async function handleGenerateContent(
       image_storage_path: imgResult.storagePath,
       image_public_url: imgResult.publicUrl,
       image_format: format || "1:1",
-      image_model: model || "imagen-3",
+      image_model: "nano-banana",
       image_prompt: imgResult.enrichedPrompt,
       status: "draft",
       tags: [],
@@ -515,7 +511,7 @@ function parseCommand(text: string): SlackAction | null {
       intent: "generate_image",
       image_prompt: prompt,
       image_format: (formatMatch?.[1] as ImageFormat) || undefined,
-      image_model: (modelMatch?.[1] as ImageModel) || undefined,
+      image_model: "nano-banana",
       account_slug: cuentaMatch?.[1],
     };
   }
@@ -532,7 +528,7 @@ function parseCommand(text: string): SlackAction | null {
       idea,
       platform: (platMatch?.[1] as Platform) || undefined,
       image_format: (formatMatch?.[1] as ImageFormat) || undefined,
-      image_model: (modelMatch?.[1] as ImageModel) || undefined,
+      image_model: "nano-banana",
     };
   }
 
@@ -623,7 +619,6 @@ export async function processSlackMessage(
           prompt,
           accountId,
           format: "1:1",
-          model: "imagen-3",
           useBrandStyle: true,
           referenceImageBase64: base64,
         });
@@ -632,7 +627,7 @@ export async function processSlackMessage(
         const { data: item } = await supabase.from("content_items").insert({
           account_id: accountId, platform: "instagram", content_type: "image_only",
           image_storage_path: result.storagePath, image_public_url: result.publicUrl,
-          image_format: "1:1", image_model: "imagen-3", image_prompt: result.enrichedPrompt,
+          image_format: "1:1", image_model: "nano-banana", image_prompt: result.enrichedPrompt,
           status: "draft", tags: [], generated_by: "slack",
         }).select().single();
 
@@ -683,11 +678,11 @@ export async function processSlackMessage(
 
         case "generate_image":
           if (!command.image_prompt) return { text: "Necesito una descripción. Ejemplo: `/imagen abstract gradient for tech post`" };
-          return await handleGenerateImage(command.image_prompt, channelId, command.image_format, command.image_model, command.account_slug);
+          return await handleGenerateImage(command.image_prompt, channelId, command.image_format, command.account_slug);
 
         case "generate_content":
           if (!command.idea) return { text: "Necesito una idea. Ejemplo: `/contenido AI en educación --plataforma instagram`" };
-          return await handleGenerateContent(command.idea, channelId, command.platform, command.image_format, command.image_model);
+          return await handleGenerateContent(command.idea, channelId, command.platform, command.image_format);
 
         case "set_account":
           if (!command.account_slug) return { text: "Necesito el slug. Ejemplo: `/cuenta aloud`" };
@@ -724,10 +719,10 @@ export async function processSlackMessage(
         return { text: await handleListPosts(action.status_filter) };
       case "generate_image":
         if (!action.image_prompt) return { text: "Necesito una descripción para la imagen." };
-        return await handleGenerateImage(action.image_prompt, channelId, action.image_format, action.image_model, action.account_slug);
+        return await handleGenerateImage(action.image_prompt, channelId, action.image_format, action.account_slug);
       case "generate_content":
         if (!action.idea) return { text: "Necesito una idea para el contenido." };
-        return await handleGenerateContent(action.idea, channelId, action.platform, action.image_format, action.image_model);
+        return await handleGenerateContent(action.idea, channelId, action.platform, action.image_format);
       case "set_account":
         if (!action.account_slug) return { text: "¿A qué cuenta quieres cambiar?" };
         return { text: await setActiveAccount(channelId, action.account_slug) };

@@ -22,22 +22,15 @@ export async function generateText(
   return response.text ?? "";
 }
 
-export type ImageModel = "imagen-3" | "imagen-4" | "nano-banana";
-
-const IMAGE_MODEL_MAP: Record<ImageModel, string> = {
-  "imagen-3": "imagen-3.0-generate-002",
-  "imagen-4": "imagen-4.0-generate-001",
-  "nano-banana": "imagen-4.0-generate-001",
-};
+const IMAGE_MODEL_ID = "imagen-4.0-generate-001";
 
 export async function generateImage(
   prompt: string,
   options?: {
     format?: "1:1" | "4:5" | "9:16" | "16:9";
-    model?: ImageModel;
   }
 ): Promise<Buffer> {
-  const modelId = IMAGE_MODEL_MAP[options?.model ?? "imagen-3"];
+  const modelId = IMAGE_MODEL_ID;
 
   // Map formats to Imagen-supported aspect ratios
   const aspectMap: Record<string, string> = {
