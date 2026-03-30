@@ -168,30 +168,35 @@ export function SettingsPanel() {
     setAccounts(accounts.filter((a) => a.id !== id));
   };
 
+  // Per-account logos
+  const [accountLogos, setAccountLogos] = useState<Record<string, ReferenceImage[]>>({});
+
+  const loadAccountLogos = async (accountId: string) => {
+    const res = await fetch(`/api/accounts/${accountId}/references?type=logo`);
+    const data = await res.json();
+    setAccountLogos((prev) => ({ ...prev, [accountId]: Array.isArray(data) ? data : [] }));
+  };
+
   const uploadLogo = async (accountId: string, file: File) => {
+    const logos = accountLogos[accountId] || [];
+    if (logos.length >= 6) return;
     const formData = new FormData();
     formData.append("file", file);
     formData.append("type", "logo");
-    const res = await fetch(`/api/accounts/${accountId}/references`, {
+    await fetch(`/api/accounts/${accountId}/references`, {
       method: "POST",
       body: formData,
     });
-    const data = await res.json();
-    if (data.public_url) {
-      const updated = accounts.map((a) =>
-        a.id === accountId ? { ...a, logo_path: data.storage_path, logo_url: data.public_url } : a
-      );
-      setAccounts(updated);
-      await updateAccount(accountId, { logo_path: data.storage_path, logo_url: data.public_url });
-    }
+    loadAccountLogos(accountId);
   };
 
-  const removeLogo = async (accountId: string) => {
-    const updated = accounts.map((a) =>
-      a.id === accountId ? { ...a, logo_path: null, logo_url: null } : a
-    );
-    setAccounts(updated);
-    await updateAccount(accountId, { logo_path: null, logo_url: null });
+  const deleteLogo = async (accountId: string, refId: string) => {
+    await fetch(`/api/accounts/${accountId}/references`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reference_id: refId }),
+    });
+    loadAccountLogos(accountId);
   };
 
   const uploadReference = async (accountId: string, file: File, description: string) => {
@@ -242,6 +247,7 @@ export function SettingsPanel() {
                     const newId = isExpanded ? null : account.id;
                     setExpandedAccount(newId);
                     if (newId) {
+                      loadAccountLogos(newId);
                       loadAccountRefs(newId);
                       loadAccountMembers(newId);
                     }
@@ -265,24 +271,29 @@ export function SettingsPanel() {
                 {/* Expanded content */}
                 {isExpanded && (
                   <div className="px-4 pb-4 space-y-5 border-t border-zinc-100 pt-4">
-                    {/* Logo */}
+                    {/* Logos */}
                     <div>
-                      <label className="text-xs text-zinc-400 mb-1 block">Logo</label>
-                      {account.logo_url ? (
-                        <div className="flex items-center gap-3">
-                          <img
-                            src={account.logo_url}
-                            alt="Logo"
-                            className="h-12 w-12 object-contain rounded-lg border border-zinc-200 bg-white p-1"
-                          />
-                          <button
-                            onClick={() => removeLogo(account.id)}
-                            className="text-xs text-red-400 hover:text-red-600"
-                          >
-                            Remove logo
-                          </button>
-                        </div>
-                      ) : (
+                      <label className="text-xs text-zinc-400 mb-1 block">
+                        Logos ({(accountLogos[account.id] || []).length}/6)
+                      </label>
+                      <div className="flex flex-wrap gap-2 mb-2">
+                        {(accountLogos[account.id] || []).map((logo) => (
+                          <div key={logo.id} className="relative group">
+                            <img
+                              src={logo.public_url}
+                              alt="Logo"
+                              className="h-14 w-14 object-contain rounded-lg border border-zinc-200 bg-white p-1"
+                            />
+                            <button
+                              onClick={() => deleteLogo(account.id, logo.id)}
+                              className="absolute -top-1 -right-1 bg-red-500 text-white text-xs w-4 h-4 rounded-full opacity-0 group-hover:opacity-100 transition-opacity leading-none"
+                            >
+                              x
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                      {(accountLogos[account.id] || []).length < 6 && (
                         <input
                           type="file"
                           accept="image/*"

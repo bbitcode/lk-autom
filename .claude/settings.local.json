@@ -12,7 +12,11 @@
       "Bash(npx tsc:*)",
       "Bash(git add:*)",
       "Bash(npm uninstall:*)",
-      "Bash(npm run:*)"
+      "Bash(npm run:*)",
+      "Bash(find /Users/Daniel/Desktop/LK -type f \\\\\\(-name *.sql -o -name *migrations* -o -name *schema* \\\\\\))",
+      "WebSearch",
+      "Bash(xargs cat:*)",
+      "Bash(xargs ls:*)"
     ]
   }
 }

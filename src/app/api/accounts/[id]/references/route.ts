@@ -8,11 +8,13 @@ export async function GET(
 ) {
   const { id } = await params;
   const supabase = getSupabase();
-  const { data, error } = await supabase
+  const imageType = _req.nextUrl.searchParams.get("type");
+  let query = supabase
     .from("reference_images")
     .select("*")
-    .eq("account_id", id)
-    .order("created_at", { ascending: false });
+    .eq("account_id", id);
+  if (imageType) query = query.eq("image_type", imageType);
+  const { data, error } = await query.order("created_at", { ascending: false });
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json(data);
@@ -36,14 +38,9 @@ export async function POST(
   const ext = file.name.split(".").pop() || "png";
   const imageId = crypto.randomUUID();
 
-  // Logo uploads go to a different path and don't create a reference_images record
-  if (uploadType === "logo") {
-    const storagePath = `accounts/${id}/logo.${ext}`;
-    const publicUrl = await uploadFile(storagePath, buffer, file.type);
-    return NextResponse.json({ storage_path: storagePath, public_url: publicUrl });
-  }
-
-  const storagePath = `accounts/${id}/references/${imageId}.${ext}`;
+  const isLogo = uploadType === "logo";
+  const folder = isLogo ? "logos" : "references";
+  const storagePath = `accounts/${id}/${folder}/${imageId}.${ext}`;
   const publicUrl = await uploadFile(storagePath, buffer, file.type);
 
   const supabase = getSupabase();
@@ -54,6 +51,7 @@ export async function POST(
       storage_path: storagePath,
       public_url: publicUrl,
       description: description || null,
+      image_type: isLogo ? "logo" : "reference",
       uploaded_via: "web",
     })
     .select()

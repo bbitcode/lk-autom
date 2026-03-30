@@ -23,7 +23,7 @@ export async function PATCH(
 ) {
   const { id } = await params;
   const body = await req.json();
-  const { name, slug, color_palette, brand_style, logo_path, logo_url, fonts } = body;
+  const { name, slug, color_palette, brand_style, fonts } = body;
 
   const supabase = getSupabase();
   const updates: Record<string, unknown> = {};
@@ -31,8 +31,6 @@ export async function PATCH(
   if (slug !== undefined) updates.slug = slug.toLowerCase().replace(/[^a-z0-9-]/g, "-");
   if (color_palette !== undefined) updates.color_palette = color_palette;
   if (brand_style !== undefined) updates.brand_style = brand_style;
-  if (logo_path !== undefined) updates.logo_path = logo_path;
-  if (logo_url !== undefined) updates.logo_url = logo_url;
   if (fonts !== undefined) updates.fonts = fonts;
 
   const { data, error } = await supabase

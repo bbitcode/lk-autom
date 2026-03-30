@@ -36,16 +36,29 @@ async function getReferenceDescriptions(accountId: string): Promise<string[]> {
     .from("reference_images")
     .select("description")
     .eq("account_id", accountId)
+    .eq("image_type", "reference")
     .not("description", "is", null)
     .limit(5);
 
   return (data || []).map((r) => r.description).filter(Boolean) as string[];
 }
 
+async function getLogoCount(accountId: string): Promise<number> {
+  const supabase = getSupabase();
+  const { count } = await supabase
+    .from("reference_images")
+    .select("id", { count: "exact", head: true })
+    .eq("account_id", accountId)
+    .eq("image_type", "logo");
+
+  return count || 0;
+}
+
 async function enrichPromptWithBrand(
   prompt: string,
   account: Account,
-  referenceDescriptions: string[]
+  referenceDescriptions: string[],
+  logoCount: number = 0
 ): Promise<string> {
   const brandContext = [
     account.brand_style ? `Brand style: ${account.brand_style}` : "",
@@ -53,7 +66,7 @@ async function enrichPromptWithBrand(
       ? `Color palette: ${(account.color_palette as string[]).join(", ")}`
       : "",
     account.fonts ? `Brand fonts: ${account.fonts}` : "",
-    account.logo_url ? `The brand has a logo — consider the brand's visual identity when designing` : "",
+    logoCount > 0 ? `The brand has ${logoCount} logo variation(s) on file — maintain visual identity consistency` : "",
     referenceDescriptions.length
       ? `Reference style notes: ${referenceDescriptions.join("; ")}`
       : "",
@@ -111,8 +124,11 @@ export async function generateContentImage(
   if (useBrandStyle) {
     const account = await getAccountContext(accountId);
     if (account) {
-      const refs = await getReferenceDescriptions(accountId);
-      finalPrompt = await enrichPromptWithBrand(finalPrompt, account, refs);
+      const [refs, logos] = await Promise.all([
+        getReferenceDescriptions(accountId),
+        getLogoCount(accountId),
+      ]);
+      finalPrompt = await enrichPromptWithBrand(finalPrompt, account, refs, logos);
     }
   }
 
