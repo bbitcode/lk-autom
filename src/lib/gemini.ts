@@ -25,9 +25,9 @@ export async function generateText(
 export type ImageModel = "imagen-3" | "imagen-4" | "nano-banana";
 
 const IMAGE_MODEL_MAP: Record<ImageModel, string> = {
-  "imagen-3": "imagen-3.0-generate-002",
-  "imagen-4": "imagen-3.0-generate-002", // Will update when Imagen 4 model ID is available
-  "nano-banana": "imagen-3.0-generate-002", // Will update with Nano Banana model ID
+  "imagen-3": "imagen-3.0-generate-001",
+  "imagen-4": "imagen-4.0-generate-preview-05-20",
+  "nano-banana": "imagen-4.0-generate-preview-05-20",
 };
 
 export async function generateImage(
