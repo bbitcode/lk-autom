@@ -52,6 +52,8 @@ async function enrichPromptWithBrand(
     account.color_palette?.length
       ? `Color palette: ${(account.color_palette as string[]).join(", ")}`
       : "",
+    account.fonts ? `Brand fonts: ${account.fonts}` : "",
+    account.logo_url ? `The brand has a logo — consider the brand's visual identity when designing` : "",
     referenceDescriptions.length
       ? `Reference style notes: ${referenceDescriptions.join("; ")}`
       : "",

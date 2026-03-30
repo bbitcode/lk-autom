@@ -62,6 +62,10 @@ create table if not exists discover_cache (
 create index if not exists idx_discover_cache_cached_at on discover_cache (cached_at);
 create index if not exists idx_discover_cache_relevance on discover_cache (relevance_score);
 
+-- Brand kit columns for accounts (run as ALTER if table already exists)
+-- alter table accounts add column if not exists logo_url text;
+-- alter table accounts add column if not exists fonts text;
+
 -- Auto-update updated_at
 create or replace function update_updated_at()
 returns trigger as $$

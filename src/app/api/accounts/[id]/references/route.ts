@@ -26,6 +26,7 @@ export async function POST(
   const formData = await req.formData();
   const file = formData.get("file") as File | null;
   const description = formData.get("description") as string | null;
+  const uploadType = formData.get("type") as string | null;
 
   if (!file) {
     return NextResponse.json({ error: "file is required" }, { status: 400 });
@@ -34,8 +35,15 @@ export async function POST(
   const buffer = Buffer.from(await file.arrayBuffer());
   const ext = file.name.split(".").pop() || "png";
   const imageId = crypto.randomUUID();
-  const storagePath = `accounts/${id}/references/${imageId}.${ext}`;
 
+  // Logo uploads go to a different path and don't create a reference_images record
+  if (uploadType === "logo") {
+    const storagePath = `accounts/${id}/logo.${ext}`;
+    const publicUrl = await uploadFile(storagePath, buffer, file.type);
+    return NextResponse.json({ storage_path: storagePath, public_url: publicUrl });
+  }
+
+  const storagePath = `accounts/${id}/references/${imageId}.${ext}`;
   const publicUrl = await uploadFile(storagePath, buffer, file.type);
 
   const supabase = getSupabase();

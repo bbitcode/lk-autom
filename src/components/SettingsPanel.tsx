@@ -168,6 +168,32 @@ export function SettingsPanel() {
     setAccounts(accounts.filter((a) => a.id !== id));
   };
 
+  const uploadLogo = async (accountId: string, file: File) => {
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("type", "logo");
+    const res = await fetch(`/api/accounts/${accountId}/references`, {
+      method: "POST",
+      body: formData,
+    });
+    const data = await res.json();
+    if (data.public_url) {
+      const updated = accounts.map((a) =>
+        a.id === accountId ? { ...a, logo_path: data.storage_path, logo_url: data.public_url } : a
+      );
+      setAccounts(updated);
+      await updateAccount(accountId, { logo_path: data.storage_path, logo_url: data.public_url });
+    }
+  };
+
+  const removeLogo = async (accountId: string) => {
+    const updated = accounts.map((a) =>
+      a.id === accountId ? { ...a, logo_path: null, logo_url: null } : a
+    );
+    setAccounts(updated);
+    await updateAccount(accountId, { logo_path: null, logo_url: null });
+  };
+
   const uploadReference = async (accountId: string, file: File, description: string) => {
     const formData = new FormData();
     formData.append("file", file);
@@ -239,6 +265,53 @@ export function SettingsPanel() {
                 {/* Expanded content */}
                 {isExpanded && (
                   <div className="px-4 pb-4 space-y-5 border-t border-zinc-100 pt-4">
+                    {/* Logo */}
+                    <div>
+                      <label className="text-xs text-zinc-400 mb-1 block">Logo</label>
+                      {account.logo_url ? (
+                        <div className="flex items-center gap-3">
+                          <img
+                            src={account.logo_url}
+                            alt="Logo"
+                            className="h-12 w-12 object-contain rounded-lg border border-zinc-200 bg-white p-1"
+                          />
+                          <button
+                            onClick={() => removeLogo(account.id)}
+                            className="text-xs text-red-400 hover:text-red-600"
+                          >
+                            Remove logo
+                          </button>
+                        </div>
+                      ) : (
+                        <input
+                          type="file"
+                          accept="image/*"
+                          onChange={(e) => {
+                            const f = e.target.files?.[0];
+                            if (f) uploadLogo(account.id, f);
+                            e.target.value = "";
+                          }}
+                          className="text-xs"
+                        />
+                      )}
+                    </div>
+
+                    {/* Fonts */}
+                    <div>
+                      <label className="text-xs text-zinc-400 mb-1 block">Fonts</label>
+                      <input
+                        type="text"
+                        value={account.fonts || ""}
+                        onChange={(e) => {
+                          const updated = [...accounts];
+                          updated[i] = { ...account, fonts: e.target.value };
+                          setAccounts(updated);
+                        }}
+                        placeholder="e.g. Montserrat Bold, Inter Regular"
+                        className="w-full px-3 py-2 border border-zinc-200 rounded-md text-sm"
+                      />
+                    </div>
+
                     {/* Brand style */}
                     <div>
                       <label className="text-xs text-zinc-400 mb-1 block">Brand style</label>
@@ -279,7 +352,7 @@ export function SettingsPanel() {
                     </div>
 
                     <button
-                      onClick={() => updateAccount(account.id, { brand_style: account.brand_style, color_palette: account.color_palette })}
+                      onClick={() => updateAccount(account.id, { brand_style: account.brand_style, color_palette: account.color_palette, fonts: account.fonts })}
                       disabled={saving}
                       className="px-4 py-1.5 bg-zinc-900 text-white text-xs rounded-md hover:bg-zinc-700 disabled:opacity-50"
                     >

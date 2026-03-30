@@ -49,6 +49,8 @@ export interface Account {
   color_palette: string[];
   brand_style: string | null;
   logo_path: string | null;
+  logo_url: string | null;
+  fonts: string | null;
   is_default: boolean;
   created_at: string;
   updated_at: string;
