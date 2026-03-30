@@ -22,6 +22,35 @@ export async function generateText(
   return response.text ?? "";
 }
 
+export async function analyzeImage(
+  imageBase64: string,
+  prompt: string,
+  options?: { maxTokens?: number }
+): Promise<string> {
+  const response = await ai.models.generateContent({
+    model: "gemini-2.5-flash",
+    contents: [
+      {
+        role: "user",
+        parts: [
+          {
+            inlineData: {
+              mimeType: "image/png",
+              data: imageBase64,
+            },
+          },
+          { text: prompt },
+        ],
+      },
+    ],
+    config: {
+      maxOutputTokens: options?.maxTokens ?? 500,
+    },
+  });
+
+  return response.text ?? "";
+}
+
 const IMAGE_MODEL_ID = "imagen-4.0-generate-001";
 
 export async function generateImage(

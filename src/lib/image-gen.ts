@@ -1,4 +1,4 @@
-import { generateText, generateImage } from "./gemini";
+import { generateText, generateImage, analyzeImage } from "./gemini";
 import { uploadFile } from "./storage";
 import { getSupabase } from "./supabase";
 import type { ImageFormat, Account } from "./types";
@@ -109,14 +109,14 @@ export async function generateContentImage(
   // Step 1: Enrich prompt with brand context and/or reference image
   let finalPrompt = prompt;
 
-  // If there's a one-time reference image, analyze it first
+  // If there's a one-time reference image, analyze it with vision
   if (referenceImageBase64) {
-    const imageAnalysis = await generateText(
-      "You analyze reference images to extract visual style cues for image generation. Describe the style, colors, composition, mood, and aesthetic in 2-3 sentences. Be specific and visual.",
-      `Analyze this reference image and describe its visual style so I can generate a similar image. The user wants to create: "${prompt}"`,
-      { model: "flash", maxTokens: 200 }
+    const imageAnalysis = await analyzeImage(
+      referenceImageBase64,
+      `Analyze this reference image in detail. Describe: 1) Layout and composition (where elements are placed), 2) Color palette and background, 3) Typography style (bold, serif, sans-serif, size), 4) Overall design aesthetic (minimalist, editorial, corporate, etc), 5) Any graphic elements (icons, shapes, borders). The user wants to create something similar with this idea: "${prompt}". Be very specific and visual in your description, in 3-4 sentences.`,
+      { maxTokens: 300 }
     );
-    finalPrompt = `${prompt}\n\nVisual style reference: ${imageAnalysis}`;
+    finalPrompt = `${prompt}\n\nIMPORTANT - Match this visual style closely: ${imageAnalysis}`;
   }
 
   if (useBrandStyle) {
