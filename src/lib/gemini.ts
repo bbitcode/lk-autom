@@ -51,35 +51,64 @@ export async function analyzeImage(
   return response.text ?? "";
 }
 
-const IMAGE_MODEL_ID = "imagen-4.0-generate-001";
+// --- Image Generation using Gemini native (supports reference images) ---
+
+const IMAGE_MODEL = "gemini-2.5-flash-preview-image-generation";
+
+interface ImageGenerationOptions {
+  format?: "1:1" | "4:5" | "9:16" | "16:9";
+  referenceImages?: { data: string; mimeType: string }[];
+}
 
 export async function generateImage(
   prompt: string,
-  options?: {
-    format?: "1:1" | "4:5" | "9:16" | "16:9";
-  }
+  options?: ImageGenerationOptions
 ): Promise<Buffer> {
-  const modelId = IMAGE_MODEL_ID;
-
-  // Map formats to Imagen-supported aspect ratios
   const aspectMap: Record<string, string> = {
     "1:1": "1:1",
-    "4:5": "3:4", // Closest supported ratio
+    "4:5": "3:4",
     "9:16": "9:16",
     "16:9": "16:9",
   };
 
-  const response = await ai.models.generateImages({
-    model: modelId,
-    prompt,
+  // Build content parts: reference images first, then text prompt
+  const parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [];
+
+  if (options?.referenceImages?.length) {
+    for (const img of options.referenceImages) {
+      parts.push({
+        inlineData: {
+          mimeType: img.mimeType,
+          data: img.data,
+        },
+      });
+    }
+  }
+
+  parts.push({ text: prompt });
+
+  const response = await ai.models.generateContent({
+    model: IMAGE_MODEL,
+    contents: [{ role: "user", parts }],
     config: {
-      numberOfImages: 1,
-      aspectRatio: aspectMap[options?.format ?? "1:1"],
+      responseModalities: ["TEXT", "IMAGE"],
+      imageConfig: {
+        aspectRatio: aspectMap[options?.format ?? "1:1"],
+      },
     },
   });
 
-  const imageData = response.generatedImages?.[0]?.image?.imageBytes;
-  if (!imageData) throw new Error("No image generated");
+  // Extract the generated image from response
+  const candidates = response.candidates;
+  if (!candidates?.[0]?.content?.parts) {
+    throw new Error("No image generated");
+  }
 
-  return Buffer.from(imageData, "base64");
+  for (const part of candidates[0].content.parts) {
+    if (part.inlineData?.data) {
+      return Buffer.from(part.inlineData.data, "base64");
+    }
+  }
+
+  throw new Error("No image in response");
 }
