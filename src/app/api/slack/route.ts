@@ -9,8 +9,6 @@ export const maxDuration = 60;
 const slackClient = new WebClient(process.env.SLACK_BOT_TOKEN);
 const signingSecret = process.env.SLACK_SIGNING_SECRET!;
 
-const processedEvents = new Map<string, number>();
-
 function verifySlackSignature(body: string, timestamp: string, signature: string): boolean {
   const fiveMinutesAgo = Math.floor(Date.now() / 1000) - 60 * 5;
   if (parseInt(timestamp) < fiveMinutesAgo) return false;
@@ -47,22 +45,10 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ok: true });
     }
 
-    // Deduplicate by message ts+channel (not event_id) to handle
-    // both app_mention and message events for the same message
-    const dedupeKey = `${event.ts}-${event.channel}`;
-    const now = Date.now();
-    if (processedEvents.has(dedupeKey)) {
-      return NextResponse.json({ ok: true });
-    }
-    processedEvents.set(dedupeKey, now);
-    // Clean entries older than 5 minutes
-    if (processedEvents.size > 500) {
-      for (const [key, timestamp] of processedEvents) {
-        if (now - timestamp > 5 * 60 * 1000) processedEvents.delete(key);
-      }
-    }
-
-    if (event.type === "app_mention" || event.type === "message") {
+    // Only process app_mention events (not message events) to avoid duplicates.
+    // When someone @mentions the bot, Slack sends both app_mention and message events.
+    // DMs are handled via app_mention when the bot is mentioned directly.
+    if (event.type === "app_mention") {
       after(async () => {
         await processAndReply(event as unknown as SlackEvent);
       });
