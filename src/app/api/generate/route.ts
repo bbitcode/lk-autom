@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSupabase } from "@/lib/supabase";
+
+export const maxDuration = 60;
+
 import {
   buildSystemPrompt,
   buildGenerateFromUrlPrompt,

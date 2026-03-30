@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { getSupabase } from "@/lib/supabase";
 import { generateText } from "@/lib/gemini";
 
+export const maxDuration = 60;
+
 export async function POST(req: NextRequest) {
   try {
     const { post_id, instruction } = await req.json();

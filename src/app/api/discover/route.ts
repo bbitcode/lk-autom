@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { getCachedArticles, fetchAndCacheNews } from "@/lib/discover";
 
+export const maxDuration = 60;
+
 export async function GET() {
   try {
     const cached = await getCachedArticles();
