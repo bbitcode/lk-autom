@@ -8,7 +8,7 @@ export async function generateText(
   options?: { model?: "pro" | "flash"; maxTokens?: number }
 ): Promise<string> {
   const modelName =
-    options?.model === "flash" ? "gemini-2.0-flash" : "gemini-2.5-flash";
+    options?.model === "flash" ? "gemini-2.5-flash" : "gemini-2.5-pro";
 
   const response = await ai.models.generateContent({
     model: modelName,
