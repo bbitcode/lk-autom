@@ -53,7 +53,7 @@ export async function analyzeImage(
 
 // --- Image Generation using Gemini native (supports reference images) ---
 
-const IMAGE_MODEL = "gemini-2.5-flash-preview-image-generation";
+const IMAGE_MODEL = "gemini-2.5-flash-image";
 
 interface ImageGenerationOptions {
   format?: "1:1" | "4:5" | "9:16" | "16:9";
