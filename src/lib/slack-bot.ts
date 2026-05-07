@@ -372,20 +372,68 @@ function parseScheduleTime(input: string): string {
   return d.toISOString();
 }
 
-// Resolves the target string (a single value, no `--cuenta` flag) into one or
-// more PostSyncer account IDs. Accepts:
-//   • platform aliases: linkedin / x / twitter / ambas / ambos
+// Platform aliases the user can type. Maps to PostsyncerPlatform values.
+const PLATFORM_ALIASES: Record<string, string[]> = {
+  linkedin: ["linkedin"],
+  in: ["linkedin"],
+  x: ["twitter"],
+  twitter: ["twitter"],
+  instagram: ["instagram"],
+  ig: ["instagram"],
+  insta: ["instagram"],
+  facebook: ["facebook"],
+  fb: ["facebook"],
+  tiktok: ["tiktok"],
+  threads: ["threads"],
+  ambas: ["linkedin", "twitter"],
+  ambos: ["linkedin", "twitter"],
+  todas: ["linkedin", "twitter", "instagram", "facebook", "tiktok", "threads"],
+  all: ["linkedin", "twitter", "instagram", "facebook", "tiktok", "threads"],
+};
+
+function describeAccount(a: PostsyncerAccount): string {
+  const handle = a.username ? ` @${a.username}` : "";
+  return `\`${a.name}${handle}\` (${a.platform}, id ${a.id})`;
+}
+
+// Looks for accounts where name OR username equals/contains the hint (case-insensitive).
+// Exact matches always win over substring matches so "aloud" picks the LinkedIn account
+// named exactly "Aloud" instead of also colliding with the Instagram "Aloud Lab".
+function matchByHint(
+  accounts: PostsyncerAccount[],
+  hint: string
+): PostsyncerAccount[] {
+  const lower = hint.toLowerCase();
+  const exact = accounts.filter(
+    (a) =>
+      !a.has_expired &&
+      (a.name.toLowerCase() === lower || (a.username || "").toLowerCase() === lower)
+  );
+  if (exact.length > 0) return exact;
+  return accounts.filter(
+    (a) =>
+      !a.has_expired &&
+      (a.name.toLowerCase().includes(lower) || (a.username || "").toLowerCase().includes(lower))
+  );
+}
+
+// Resolves the target string into one or more PostSyncer account IDs. Accepts:
+//   • platform aliases: linkedin / in / x / twitter / instagram / ig / facebook / fb /
+//                       tiktok / threads / ambas / todas
 //   • PostSyncer numeric account ID (single or comma-separated)
-//   • account name substring (e.g. "Daniel-LinkedIn")
+//   • account name or username substring (e.g. "Daniel Velilla", "aloudlab.es")
+//   • platform:hint syntax to scope the substring search to one platform
+//                       (e.g. "linkedin:daniel", "instagram:.es")
 function resolveTargetAccountIds(
   target: string,
   accounts: PostsyncerAccount[]
 ): { ids: number[]; resolved: PostsyncerAccount[]; error?: string } {
-  const lower = target.toLowerCase().trim();
+  const trimmed = target.trim();
+  const lower = trimmed.toLowerCase();
 
   // Numeric / comma-separated PostSyncer account IDs.
-  if (/^[\d,\s]+$/.test(target)) {
-    const ids = target.split(",").map((s) => parseInt(s.trim(), 10)).filter((n) => !isNaN(n));
+  if (/^[\d,\s]+$/.test(trimmed)) {
+    const ids = trimmed.split(",").map((s) => parseInt(s.trim(), 10)).filter((n) => !isNaN(n));
     const resolved = accounts.filter((a) => ids.includes(a.id));
     if (resolved.length !== ids.length) {
       const missing = ids.filter((id) => !resolved.find((a) => a.id === id));
@@ -394,75 +442,105 @@ function resolveTargetAccountIds(
     return { ids, resolved };
   }
 
-  const platformMap: Record<string, string[]> = {
-    linkedin: ["linkedin"],
-    x: ["twitter"],
-    twitter: ["twitter"],
-    ambas: ["linkedin", "twitter"],
-    ambos: ["linkedin", "twitter"],
-  };
-  const platforms = platformMap[lower];
+  // platform:hint syntax — scope the substring match to a specific platform.
+  if (lower.includes(":")) {
+    const [platformAlias, ...rest] = lower.split(":");
+    const hint = rest.join(":").trim();
+    const platforms = PLATFORM_ALIASES[platformAlias.trim()];
+    if (!platforms) {
+      return {
+        ids: [],
+        resolved: [],
+        error: `No reconocí la plataforma "${platformAlias}". Usa linkedin, x, instagram, facebook, tiktok, threads, ambas, todas.`,
+      };
+    }
+    if (!hint) {
+      return { ids: [], resolved: [], error: `Falta el nombre/handle después de "${platformAlias}:".` };
+    }
+    const platformAccounts = accounts.filter((a) => platforms.includes(a.platform));
+    const matches = matchByHint(platformAccounts, hint);
+    if (matches.length === 0) {
+      return { ids: [], resolved: [], error: `No hay cuentas en ${platforms.join("/")} que coincidan con "${hint}".` };
+    }
+    if (matches.length > 1) {
+      return {
+        ids: [],
+        resolved: [],
+        error: `Varias cuentas coinciden con "${target}": ${matches.map(describeAccount).join(", ")}. Sé más específico.`,
+      };
+    }
+    return { ids: [matches[0].id], resolved: matches };
+  }
 
+  // Plain platform alias.
+  const platforms = PLATFORM_ALIASES[lower];
   if (platforms) {
     const matched = accounts.filter((a) => platforms.includes(a.platform) && !a.has_expired);
     if (matched.length === 0) {
       return { ids: [], resolved: [], error: `No hay cuentas activas para: ${platforms.join(", ")}.` };
     }
 
-    if (lower === "linkedin" || lower === "x" || lower === "twitter") {
-      const platform = platforms[0];
-      const ofPlatform = matched.filter((a) => a.platform === platform);
-      if (ofPlatform.length === 1) {
-        return { ids: [ofPlatform[0].id], resolved: ofPlatform };
+    // Multi-platform aliases (ambas / todas) pick one of each platform.
+    if (platforms.length > 1) {
+      const ids: number[] = [];
+      const resolved: PostsyncerAccount[] = [];
+      const ambiguous: string[] = [];
+      for (const platform of platforms) {
+        const ofPlatform = matched.filter((a) => a.platform === platform);
+        if (ofPlatform.length === 0) continue;
+        if (ofPlatform.length === 1) {
+          ids.push(ofPlatform[0].id);
+          resolved.push(ofPlatform[0]);
+          continue;
+        }
+        ambiguous.push(`${platform}: ${ofPlatform.map(describeAccount).join(", ")}`);
       }
-      const defaults = ofPlatform.filter((a) => a.is_default);
-      if (defaults.length === 1) {
-        return { ids: [defaults[0].id], resolved: defaults };
+      if (ambiguous.length > 0) {
+        return {
+          ids: [],
+          resolved: [],
+          error: `Hay varias cuentas en estas plataformas. Especifica con \`platform:hint\` o id:\n${ambiguous.join("\n")}`,
+        };
       }
-      const list = ofPlatform.map((a) => `\`${a.name}\` (id ${a.id})`).join(", ");
-      return {
-        ids: [],
-        resolved: [],
-        error: `Hay varias cuentas de ${platform}. Pásala por nombre o id: ${list}`,
-      };
+      if (ids.length === 0) {
+        return { ids: [], resolved: [], error: `No hay cuentas activas para ${platforms.join("/")}.` };
+      }
+      return { ids, resolved };
     }
 
-    // ambas / ambos: pick one of each platform (default if available, else first).
-    const ids: number[] = [];
-    const resolved: PostsyncerAccount[] = [];
-    for (const platform of platforms) {
-      const ofPlatform = matched.filter((a) => a.platform === platform);
-      if (ofPlatform.length === 0) continue;
-      const pick = ofPlatform.find((a) => a.is_default) || ofPlatform[0];
-      ids.push(pick.id);
-      resolved.push(pick);
+    // Single-platform alias (linkedin, x, instagram, etc.). If multiple accounts on
+    // that platform, force the user to disambiguate — never silently pick a default,
+    // because that's how a "linkedin" command can accidentally publish to X via the
+    // workspace default.
+    const platform = platforms[0];
+    const ofPlatform = matched.filter((a) => a.platform === platform);
+    if (ofPlatform.length === 1) {
+      return { ids: [ofPlatform[0].id], resolved: ofPlatform };
     }
-    if (ids.length === 0) {
-      return { ids: [], resolved: [], error: `No hay cuentas activas para ambas plataformas.` };
-    }
-    return { ids, resolved };
-  }
-
-  // Fall through: substring match on PostSyncer account name (case-insensitive).
-  const nameMatches = accounts.filter(
-    (a) => !a.has_expired && a.name.toLowerCase().includes(lower)
-  );
-  if (nameMatches.length === 1) {
-    return { ids: [nameMatches[0].id], resolved: nameMatches };
-  }
-  if (nameMatches.length > 1) {
-    const list = nameMatches.map((a) => `\`${a.name}\` (${a.platform}, id ${a.id})`).join(", ");
     return {
       ids: [],
       resolved: [],
-      error: `Hay varias cuentas que coinciden con "${target}": ${list}. Sé más específico.`,
+      error: `Hay varias cuentas de ${platform}. Especifica cuál: ${ofPlatform.map(describeAccount).join(", ")}. Puedes usar \`${lower}:hint\` o el id directo.`,
+    };
+  }
+
+  // Fall through: free-form name/username substring match across all accounts.
+  const matches = matchByHint(accounts, lower);
+  if (matches.length === 1) {
+    return { ids: [matches[0].id], resolved: matches };
+  }
+  if (matches.length > 1) {
+    return {
+      ids: [],
+      resolved: [],
+      error: `Varias cuentas coinciden con "${target}": ${matches.map(describeAccount).join(", ")}. Sé más específico o usa \`platform:hint\`.`,
     };
   }
 
   return {
     ids: [],
     resolved: [],
-    error: `No reconocí "${target}". Usa \`linkedin\`, \`x\`, \`ambas\`, un nombre de cuenta, o un id (ver \`/redes\`).`,
+    error: `No reconocí "${target}". Usa \`linkedin\`, \`x\`, \`instagram\`, \`ambas\`, un nombre de cuenta, o un id (ver \`/redes\`).`,
   };
 }
 
@@ -730,14 +808,18 @@ _IDs cortos: bastan los primeros 8 caracteres (ej. \`a3f29c41\`)._
 
 *Publicación (PostSyncer):*
 • \`/aprobar [ID]\` — Marca el post como listo para publicar
-• \`/redes\` — Lista cuentas conectadas (LinkedIn, X) con sus IDs
-• \`/publicar [ID] linkedin\` — Publica ahora a tu LinkedIn
-• \`/publicar [ID] x\` — Publica ahora a X
-• \`/publicar [ID] ambas\` — Publica a ambas plataformas
-• \`/publicar [ID] linkedin --cuando "mañana 8am"\` — Agenda (lenguaje natural)
-• \`/publicar [ID] linkedin --cuando "2026-05-10 08:00"\` — Agenda (formato fijo)
-• \`/publicar [ID] [nombre-cuenta]\` — Cuando hay varias cuentas en una plataforma
+• \`/redes\` — Lista cuentas conectadas con sus IDs y handles
+• \`/publicar [ID] [destino]\` — Publica ya
+• \`/publicar [ID] [destino] --cuando "mañana 8am"\` — Agenda
 • \`/estado [ID]\` — Estado del post (local + PostSyncer)
+
+*Destinos válidos* (cuando hay 1 cuenta por plataforma):
+\`linkedin\`, \`x\`, \`instagram\`, \`ig\`, \`facebook\`, \`fb\`, \`tiktok\`, \`threads\`, \`ambas\`, \`todas\`
+
+*Cuando hay varias cuentas en una plataforma* (caso Aloud), especifica con:
+• \`platform:hint\` — \`linkedin:daniel\`, \`linkedin:aloud\`, \`instagram:.es\`
+• Nombre o handle único — \`velilla\`, \`aloudlab.es\`, \`danielvelillap\`
+• ID numérico — \`6494\`, \`6495\`
 
 *Fechas que entiende* (Spanish + English):
 \`mañana 8am\`, \`tomorrow at 9am\`, \`lunes 10am\`, \`in 2 days\`, \`2026-05-10 08:00\`
