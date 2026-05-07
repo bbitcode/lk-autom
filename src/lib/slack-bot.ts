@@ -1,3 +1,4 @@
+import * as chrono from "chrono-node";
 import { getSupabase } from "./supabase";
 import { buildSystemPrompt } from "./prompts";
 import { buildPlatformCopyPrompt, buildPlatformFromUrlPrompt } from "./platforms";
@@ -11,6 +12,35 @@ import {
   type PostsyncerAccount,
 } from "./postsyncer";
 import type { Language, Platform } from "./types";
+
+const UUID_RE = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
+
+// Resolves a full UUID from either a complete UUID or a short prefix (8+ chars
+// of hex). Returns null if nothing matches; throws if multiple matches.
+async function resolveContentId(idOrPrefix: string): Promise<string | null> {
+  const trimmed = idOrPrefix.trim();
+  if (UUID_RE.test(trimmed)) return trimmed.toLowerCase();
+  if (trimmed.length < 4) return null;
+
+  const supabase = getSupabase();
+  const { data } = await supabase
+    .from("content_items")
+    .select("id")
+    .order("created_at", { ascending: false })
+    .limit(200);
+  const lower = trimmed.toLowerCase();
+  const matches = (data || []).filter((d) => (d.id as string).toLowerCase().startsWith(lower));
+  if (matches.length === 0) return null;
+  if (matches.length > 1) {
+    throw new Error(`Hay ${matches.length} posts que empiezan con \`${trimmed}\`. Usa más caracteres del ID.`);
+  }
+  return matches[0].id;
+}
+
+// Short ID for display in Slack messages — matches the prefix the user can type back.
+function shortId(id: string): string {
+  return id.slice(0, 8);
+}
 
 interface SlackAction {
   intent:
@@ -177,7 +207,7 @@ export async function handleGenerateFromUrl(url: string, memberName?: string, fo
     .single();
   if (error) throw new Error(error.message);
 
-  return `*Post generado desde URL* (ID: \`${item.id}\`)\n\n${item.copy_text}`;
+  return `*Post generado desde URL* (ID: \`${shortId(item.id)}\`)\n\n${item.copy_text}`;
 }
 
 export async function handleGenerateFromIdea(idea: string, memberName?: string): Promise<string> {
@@ -203,7 +233,7 @@ export async function handleGenerateFromIdea(idea: string, memberName?: string):
     .single();
   if (error) throw new Error(error.message);
 
-  return `*Post generado desde idea* (ID: \`${item.id}\`)\n\n${item.copy_text}`;
+  return `*Post generado desde idea* (ID: \`${shortId(item.id)}\`)\n\n${item.copy_text}`;
 }
 
 export async function handleDiscoverNews(): Promise<string> {
@@ -220,8 +250,11 @@ export async function handleDiscoverNews(): Promise<string> {
 }
 
 export async function handleRefinePost(postId: string, instruction: string): Promise<string> {
+  const id = await resolveContentId(postId);
+  if (!id) return `No encontré el post con ID \`${postId}\`.`;
+
   const supabase = getSupabase();
-  const { data: item, error } = await supabase.from("content_items").select("*").eq("id", postId).single();
+  const { data: item, error } = await supabase.from("content_items").select("*").eq("id", id).single();
   if (error || !item) return `No encontré el post con ID \`${postId}\`.`;
 
   const langName = item.copy_language === "en" ? "English" : "Spanish";
@@ -234,12 +267,12 @@ export async function handleRefinePost(postId: string, instruction: string): Pro
   const { data: updated, error: updateError } = await supabase
     .from("content_items")
     .update({ copy_text: newCopy })
-    .eq("id", postId)
+    .eq("id", id)
     .select()
     .single();
   if (updateError) throw new Error(updateError.message);
 
-  return `*Post refinado* (ID: \`${updated.id}\`)\n\n${updated.copy_text}`;
+  return `*Post refinado* (ID: \`${shortId(updated.id)}\`)\n\n${updated.copy_text}`;
 }
 
 export async function handleListPosts(statusFilter?: string): Promise<string> {
@@ -294,29 +327,63 @@ export async function handleSaveManual(text: string, language: Language): Promis
     .single();
   if (error) throw new Error(error.message);
 
-  return `*Copy guardado tal cual* (ID: \`${item.id}\`) — idioma: ${language}\nUsa \`/aprobar ${item.id}\` y luego \`/publicar ${item.id} [linkedin|x|ambas]\` para programarlo.`;
+  return `*Copy guardado tal cual* (ID: \`${shortId(item.id)}\`) — idioma: ${language}\nUsa \`/aprobar ${shortId(item.id)}\` y luego \`/publicar ${shortId(item.id)} [linkedin|x|ambas]\` para programarlo.`;
 }
 
 // --- PostSyncer handlers ---
 
-// Bogota is fixed UTC-5 (no DST). Accepts "YYYY-MM-DD HH:MM", ISO, or with offset.
+// Parses a natural-language datetime ("mañana 8am", "tomorrow 9am", "lunes 10am",
+// "in 2 days", "2026-05-08 08:00", ISO strings...). Defaults to Bogota (UTC-5)
+// when the user does not specify a timezone.
 function parseScheduleTime(input: string): string {
-  const trimmed = input.trim();
-  const normalized = trimmed.includes("T") ? trimmed : trimmed.replace(/\s+/, "T");
-  const hasOffset = /Z$|[+-]\d{2}:?\d{2}$/.test(normalized);
-  const candidate = hasOffset ? normalized : `${normalized}-05:00`;
-  const date = new Date(candidate);
-  if (isNaN(date.getTime())) throw new Error(`Fecha inválida: "${input}". Usa formato "2026-04-28 10:00".`);
-  return date.toISOString();
+  const text = input.trim().replace(/^"|"$/g, "");
+
+  // Try Spanish first, then English/casual. forwardDate=true means weekday names
+  // and bare dates always resolve to the upcoming occurrence, not a past one.
+  const ref = new Date();
+  const opts = { forwardDate: true };
+  const results = [
+    ...chrono.es.parse(text, ref, opts),
+    ...chrono.casual.parse(text, ref, opts),
+  ];
+  if (results.length === 0) {
+    throw new Error(`Fecha inválida: "${input}". Prueba "mañana 8am" o "2026-05-08 08:00".`);
+  }
+
+  const start = results[0].start;
+
+  // If the parsed string already pinned a timezone, trust it. Otherwise interpret
+  // the local components in Bogota time (UTC-5, no DST) and emit an ISO string.
+  if (start.isCertain("timezoneOffset")) {
+    return start.date().toISOString();
+  }
+
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const year = start.get("year") ?? new Date().getFullYear();
+  const month = start.get("month") ?? 1;
+  const day = start.get("day") ?? 1;
+  const hour = start.get("hour") ?? 9;
+  const minute = start.get("minute") ?? 0;
+  const iso = `${year}-${pad(month)}-${pad(day)}T${pad(hour)}:${pad(minute)}:00-05:00`;
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) {
+    throw new Error(`Fecha inválida: "${input}".`);
+  }
+  return d.toISOString();
 }
 
+// Resolves the target string (a single value, no `--cuenta` flag) into one or
+// more PostSyncer account IDs. Accepts:
+//   • platform aliases: linkedin / x / twitter / ambas / ambos
+//   • PostSyncer numeric account ID (single or comma-separated)
+//   • account name substring (e.g. "Daniel-LinkedIn")
 function resolveTargetAccountIds(
   target: string,
   accounts: PostsyncerAccount[]
 ): { ids: number[]; resolved: PostsyncerAccount[]; error?: string } {
   const lower = target.toLowerCase().trim();
 
-  // Numeric / comma-separated ids
+  // Numeric / comma-separated PostSyncer account IDs.
   if (/^[\d,\s]+$/.test(target)) {
     const ids = target.split(",").map((s) => parseInt(s.trim(), 10)).filter((n) => !isNaN(n));
     const resolved = accounts.filter((a) => ids.includes(a.id));
@@ -335,45 +402,68 @@ function resolveTargetAccountIds(
     ambos: ["linkedin", "twitter"],
   };
   const platforms = platformMap[lower];
-  if (!platforms) {
-    return { ids: [], resolved: [], error: `Target inválido: "${target}". Usa linkedin, x, ambas, o IDs (ver \`/redes\`).` };
-  }
 
-  const matched = accounts.filter((a) => platforms.includes(a.platform) && !a.has_expired);
-  if (matched.length === 0) {
-    return { ids: [], resolved: [], error: `No hay cuentas conectadas para: ${platforms.join(", ")}.` };
-  }
+  if (platforms) {
+    const matched = accounts.filter((a) => platforms.includes(a.platform) && !a.has_expired);
+    if (matched.length === 0) {
+      return { ids: [], resolved: [], error: `No hay cuentas activas para: ${platforms.join(", ")}.` };
+    }
 
-  // If multiple accounts match a single platform, prefer is_default; otherwise require user to pick.
-  if (lower === "linkedin" || lower === "x" || lower === "twitter") {
-    const platform = platforms[0];
-    const ofPlatform = matched.filter((a) => a.platform === platform);
-    if (ofPlatform.length > 1) {
+    if (lower === "linkedin" || lower === "x" || lower === "twitter") {
+      const platform = platforms[0];
+      const ofPlatform = matched.filter((a) => a.platform === platform);
+      if (ofPlatform.length === 1) {
+        return { ids: [ofPlatform[0].id], resolved: ofPlatform };
+      }
       const defaults = ofPlatform.filter((a) => a.is_default);
       if (defaults.length === 1) {
         return { ids: [defaults[0].id], resolved: defaults };
       }
-      const list = ofPlatform.map((a) => `\`${a.id}\` ${a.name}${a.username ? ` (@${a.username})` : ""}`).join(", ");
+      const list = ofPlatform.map((a) => `\`${a.name}\` (id ${a.id})`).join(", ");
       return {
         ids: [],
         resolved: [],
-        error: `Hay varias cuentas de ${platform}. Especifica el ID con \`--cuenta [id]\` o pásalo directo: ${list}`,
+        error: `Hay varias cuentas de ${platform}. Pásala por nombre o id: ${list}`,
       };
     }
-    return { ids: ofPlatform.map((a) => a.id), resolved: ofPlatform };
+
+    // ambas / ambos: pick one of each platform (default if available, else first).
+    const ids: number[] = [];
+    const resolved: PostsyncerAccount[] = [];
+    for (const platform of platforms) {
+      const ofPlatform = matched.filter((a) => a.platform === platform);
+      if (ofPlatform.length === 0) continue;
+      const pick = ofPlatform.find((a) => a.is_default) || ofPlatform[0];
+      ids.push(pick.id);
+      resolved.push(pick);
+    }
+    if (ids.length === 0) {
+      return { ids: [], resolved: [], error: `No hay cuentas activas para ambas plataformas.` };
+    }
+    return { ids, resolved };
   }
 
-  // ambas: pick one of each platform (default if available, else first)
-  const ids: number[] = [];
-  const resolved: PostsyncerAccount[] = [];
-  for (const platform of platforms) {
-    const ofPlatform = matched.filter((a) => a.platform === platform);
-    if (ofPlatform.length === 0) continue;
-    const pick = ofPlatform.find((a) => a.is_default) || ofPlatform[0];
-    ids.push(pick.id);
-    resolved.push(pick);
+  // Fall through: substring match on PostSyncer account name (case-insensitive).
+  const nameMatches = accounts.filter(
+    (a) => !a.has_expired && a.name.toLowerCase().includes(lower)
+  );
+  if (nameMatches.length === 1) {
+    return { ids: [nameMatches[0].id], resolved: nameMatches };
   }
-  return { ids, resolved };
+  if (nameMatches.length > 1) {
+    const list = nameMatches.map((a) => `\`${a.name}\` (${a.platform}, id ${a.id})`).join(", ");
+    return {
+      ids: [],
+      resolved: [],
+      error: `Hay varias cuentas que coinciden con "${target}": ${list}. Sé más específico.`,
+    };
+  }
+
+  return {
+    ids: [],
+    resolved: [],
+    error: `No reconocí "${target}". Usa \`linkedin\`, \`x\`, \`ambas\`, un nombre de cuenta, o un id (ver \`/redes\`).`,
+  };
 }
 
 interface PublishableRecord {
@@ -413,20 +503,22 @@ async function findPublishable(id: string): Promise<PublishableRecord | null> {
 }
 
 export async function handleApprovePost(postId: string): Promise<string> {
-  const record = await findPublishable(postId);
+  const id = await resolveContentId(postId);
+  if (!id) return `No encontré el post con ID \`${postId}\`.`;
+  const record = await findPublishable(id);
   if (!record) return `No encontré el post con ID \`${postId}\`.`;
-  if (record.status === "used") return `El post \`${postId}\` ya fue publicado.`;
-  if (record.status === "ready") return `El post \`${postId}\` ya estaba aprobado.`;
+  if (record.status === "used") return `El post \`${shortId(id)}\` ya fue publicado.`;
+  if (record.status === "ready") return `El post \`${shortId(id)}\` ya estaba aprobado.`;
 
   const supabase = getSupabase();
   const { error: updateError } = await supabase
     .from("content_items")
     .update({ status: "ready", approved_at: new Date().toISOString(), approved_by: "slack" })
-    .eq("id", postId);
+    .eq("id", id);
   if (updateError) throw new Error(updateError.message);
 
   const idiomaHint = record.default_language ? "" : " --idioma [en|es]";
-  return `*Post aprobado* \`${postId}\` ✅\nUsa \`/publicar ${postId} [linkedin|x|ambas]${idiomaHint}\` para publicar.`;
+  return `*Post aprobado* \`${shortId(id)}\` ✅\nUsa \`/publicar ${shortId(id)} [linkedin|x|ambas]${idiomaHint}\` para publicar.`;
 }
 
 export async function handleListSocialAccounts(): Promise<string> {
@@ -458,12 +550,15 @@ export async function handlePublishPost(
   language: Language | undefined,
   when: string | undefined
 ): Promise<string> {
-  if (!target) return "Necesito el destino. Ejemplo: `/publicar abc123 linkedin --idioma es`";
+  if (!target) return "Necesito el destino. Ejemplo: `/publicar abc12345 linkedin --idioma es`";
 
-  const record = await findPublishable(postId);
+  const id = await resolveContentId(postId);
+  if (!id) return `No encontré el post con ID \`${postId}\`.`;
+
+  const record = await findPublishable(id);
   if (!record) return `No encontré el post con ID \`${postId}\`.`;
   if (record.status !== "ready") {
-    return `El post \`${postId}\` está en estado \`${record.status}\`. Apruébalo primero con \`/aprobar ${postId}\`.`;
+    return `El post \`${shortId(id)}\` está en estado \`${record.status}\`. Apruébalo primero con \`/aprobar ${shortId(id)}\`.`;
   }
 
   const resolvedLanguage: Language | undefined = language || record.default_language || undefined;
@@ -472,12 +567,15 @@ export async function handlePublishPost(
   const text = resolvedLanguage === "en" ? record.text_en : record.text_es;
   if (!text) {
     const langLabel = resolvedLanguage === "en" ? "inglés" : "español";
-    return `El post \`${postId}\` no tiene contenido en ${langLabel}.`;
+    return `El post \`${shortId(id)}\` no tiene contenido en ${langLabel}.`;
   }
 
   const accounts = await postsyncerListAccounts();
   const { ids, resolved, error: targetError } = resolveTargetAccountIds(target, accounts);
   if (targetError) return targetError;
+  if (ids.length === 0) {
+    return `No pude resolver "${target}" a una cuenta de PostSyncer. Usa \`/redes\` para ver opciones.`;
+  }
 
   let scheduledAt: string | undefined;
   if (when) {
@@ -508,7 +606,7 @@ export async function handlePublishPost(
       scheduled_at: scheduledAt || null,
       publish_language: resolvedLanguage,
     })
-    .eq("id", postId);
+    .eq("id", id);
 
   const accountList = resolved.map((a) => `${a.platform}/${a.name}`).join(", ");
   const when_msg = scheduledAt ? `agendado para ${scheduledAt}` : "publicado ahora";
@@ -516,10 +614,12 @@ export async function handlePublishPost(
 }
 
 export async function handlePostStatus(postId: string): Promise<string> {
-  const record = await findPublishable(postId);
+  const id = await resolveContentId(postId);
+  if (!id) return `No encontré el post con ID \`${postId}\`.`;
+  const record = await findPublishable(id);
   if (!record) return `No encontré el post con ID \`${postId}\`.`;
 
-  let result = `*Post \`${postId}\`*\n• Estado local: ${record.status}\n`;
+  let result = `*Post \`${shortId(id)}\`*\n• Estado local: ${record.status}\n`;
   if (record.approved_at) result += `• Aprobado: ${record.approved_at}\n`;
   if (record.published_to?.length) result += `• Plataformas: ${record.published_to.join(", ")}\n`;
   if (record.publish_language) result += `• Idioma: ${record.publish_language}\n`;
@@ -557,7 +657,8 @@ function parseCommand(text: string): SlackAction | null {
 
   if (/^\/noticias\s*$/i.test(text)) return { intent: "discover_news" };
 
-  const refineMatch = text.match(/^\/refinar\s+([a-f0-9-]+)\s+(.+)/i);
+  // Accept short prefixes (4+ hex chars) so users don't need to paste the full UUID.
+  const refineMatch = text.match(/^\/refinar\s+([a-f0-9-]{4,})\s+(.+)/i);
   if (refineMatch) return { intent: "refine_post", post_id: refineMatch[1], instruction: refineMatch[2].trim() };
 
   const postsMatch = text.match(/^\/posts(?:\s+(draft|ready|used))?\s*$/i);
@@ -576,32 +677,34 @@ function parseCommand(text: string): SlackAction | null {
   }
 
   // PostSyncer commands
-  const aprobarMatch = text.match(/^\/aprobar\s+([a-f0-9-]+)\s*$/i);
+  const aprobarMatch = text.match(/^\/aprobar\s+([a-f0-9-]{4,})\s*$/i);
   if (aprobarMatch) return { intent: "approve_post", post_id: aprobarMatch[1] };
 
   if (/^\/redes\s*$/i.test(text)) return { intent: "list_social_accounts" };
 
-  const estadoMatch = text.match(/^\/estado\s+([a-f0-9-]+)\s*$/i);
+  const estadoMatch = text.match(/^\/estado\s+([a-f0-9-]{4,})\s*$/i);
   if (estadoMatch) return { intent: "post_status", post_id: estadoMatch[1] };
 
   const publicarMatch = text.match(/^\/publicar\s+(.+)/i);
   if (publicarMatch) {
     const args = publicarMatch[1];
-    const cuandoMatch = args.match(/--cuando\s+(?:"([^"]+)"|(\S+))/i);
-    const idiomaMatch = args.match(/--idioma\s+(en|es)/i);
-    const cuentaMatch = args.match(/--cuenta\s+([\d,\s]+?)(?=\s--|$)/i);
+    // Flags accept any of: --flag value, --flag=value, --flag"value", --flag "value".
+    // Unquoted values can be multi-word; the value ends at the next " --" or end-of-string.
+    const cuandoMatch = args.match(/--cuando[\s=]*(?:"([^"]*)"|(?!--)(.+?))(?=\s+--|\s*$)/i);
+    const idiomaMatch = args.match(/--idioma[\s=]*(en|es)/i);
     const cleaned = args
-      .replace(/--cuando\s+(?:"[^"]+"|\S+)/gi, "")
-      .replace(/--idioma\s+(?:en|es)/gi, "")
-      .replace(/--cuenta\s+[\d,\s]+/gi, "")
+      .replace(/--cuando[\s=]*(?:"[^"]*"|(?!--).+?)(?=\s+--|\s*$)/gi, "")
+      .replace(/--idioma[\s=]*(?:en|es)/gi, "")
+      // Legacy flag that no longer exists; strip so it doesn't pollute the target arg.
+      .replace(/--cuenta[\s=]*[\d,\s]+/gi, "")
       .trim();
     const parts = cleaned.split(/\s+/).filter(Boolean);
     return {
       intent: "publish_post",
       post_id: parts[0],
-      publish_target: cuentaMatch?.[1]?.trim() || parts[1],
+      publish_target: parts.slice(1).join(" ") || undefined,
       publish_language: (idiomaMatch?.[1].toLowerCase() as Language) || undefined,
-      publish_when: cuandoMatch?.[1] || cuandoMatch?.[2],
+      publish_when: (cuandoMatch?.[1] ?? cuandoMatch?.[2])?.trim(),
     };
   }
 
@@ -612,12 +715,14 @@ function parseCommand(text: string): SlackAction | null {
 
 const HELP_MESSAGE = `*Comandos disponibles:*
 
-*Texto (LinkedIn):*
+_IDs cortos: bastan los primeros 8 caracteres (ej. \`a3f29c41\`)._
+
+*Generación (LinkedIn, español):*
 • \`/generar [URL]\` — Post desde un artículo
 • \`/generar [URL] para Daniel\` — Con tono de un miembro
 • \`/idea [texto]\` — Post desde una idea
 • \`/refinar [ID] [instrucción]\` — Refina un post
-• \`/posts\` — Lista posts (filtrar: \`/posts draft\`)
+• \`/posts\` — Lista los últimos 5 (filtrar: \`/posts draft\`)
 
 *Texto literal (sin IA):*
 • \`/copia [texto]\` — Guarda el copy tal cual (default español)
@@ -626,10 +731,16 @@ const HELP_MESSAGE = `*Comandos disponibles:*
 *Publicación (PostSyncer):*
 • \`/aprobar [ID]\` — Marca el post como listo para publicar
 • \`/redes\` — Lista cuentas conectadas (LinkedIn, X) con sus IDs
-• \`/publicar [ID] [linkedin|x|ambas] --idioma [en|es]\` — Publica ahora
-• \`/publicar [ID] linkedin --idioma es --cuando "2026-04-28 10:00"\` — Agenda
-• \`/publicar [ID] --cuenta 6495 --idioma es\` — A una cuenta específica
+• \`/publicar [ID] linkedin\` — Publica ahora a tu LinkedIn
+• \`/publicar [ID] x\` — Publica ahora a X
+• \`/publicar [ID] ambas\` — Publica a ambas plataformas
+• \`/publicar [ID] linkedin --cuando "mañana 8am"\` — Agenda (lenguaje natural)
+• \`/publicar [ID] linkedin --cuando "2026-05-10 08:00"\` — Agenda (formato fijo)
+• \`/publicar [ID] [nombre-cuenta]\` — Cuando hay varias cuentas en una plataforma
 • \`/estado [ID]\` — Estado del post (local + PostSyncer)
+
+*Fechas que entiende* (Spanish + English):
+\`mañana 8am\`, \`tomorrow at 9am\`, \`lunes 10am\`, \`in 2 days\`, \`2026-05-10 08:00\`
 
 *Otros:*
 • \`/noticias\` — Noticias relevantes
