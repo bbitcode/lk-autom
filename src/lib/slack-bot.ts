@@ -1,14 +1,8 @@
 import { getSupabase } from "./supabase";
-import {
-  buildSystemPrompt,
-  buildGenerateFromUrlPrompt,
-  buildGenerateFromIdeaPrompt,
-} from "./prompts";
+import { buildSystemPrompt } from "./prompts";
+import { buildPlatformCopyPrompt, buildPlatformFromUrlPrompt } from "./platforms";
 import { getCachedArticles, fetchAndCacheNews } from "./discover";
 import { generateText } from "./gemini";
-import { generateContentImage } from "./image-gen";
-import { buildPlatformCopyPrompt } from "./platforms";
-import { uploadFile } from "./storage";
 import {
   createPost as postsyncerCreatePost,
   listAccounts as postsyncerListAccounts,
@@ -16,7 +10,7 @@ import {
   getActiveWorkspaceId,
   type PostsyncerAccount,
 } from "./postsyncer";
-import type { ImageFormat, Language, Platform } from "./types";
+import type { Language, Platform } from "./types";
 
 interface SlackAction {
   intent:
@@ -26,13 +20,6 @@ interface SlackAction {
     | "refine_post"
     | "list_posts"
     | "general_chat"
-    | "generate_image"
-    | "generate_content"
-    | "set_account"
-    | "list_accounts"
-    | "upload_reference"
-    | "delete_image"
-    | "list_images"
     | "approve_post"
     | "list_social_accounts"
     | "publish_post"
@@ -45,12 +32,6 @@ interface SlackAction {
   post_id?: string;
   focus?: string;
   status_filter?: string;
-  account_slug?: string;
-  platform?: Platform;
-  image_prompt?: string;
-  image_format?: ImageFormat;
-  image_model?: string;
-  content_item_id?: string;
   publish_target?: string; // "linkedin" | "x" | "twitter" | "ambas" | comma-separated account ids
   publish_language?: Language;
   publish_when?: string; // raw user-provided datetime
@@ -60,55 +41,38 @@ interface SlackAction {
 
 const TEAM_MEMBERS = ["Daniel", "Natalia", "Tomás", "Isa", "Jorge"];
 
-function parseJsonFromResponse(text: string): Record<string, string> | null {
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-  const raw = fenced ? fenced[1] : text;
-  const jsonMatch = raw.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) return null;
-  try {
-    return JSON.parse(jsonMatch[0]);
-  } catch {
-    return null;
-  }
-}
-
-// --- Account context helpers ---
-
-async function getActiveAccountId(channelId: string): Promise<string> {
+// Slack-side handlers all write to the single Aloud account in `accounts`.
+async function getDefaultAccountId(): Promise<string> {
   const supabase = getSupabase();
   const { data } = await supabase
-    .from("slack_channel_config")
-    .select("active_account_id")
-    .eq("channel_id", channelId)
-    .single();
-
-  if (data?.active_account_id) return data.active_account_id;
-
-  // Fall back to default account
-  const { data: defaultAccount } = await supabase
     .from("accounts")
     .select("id")
     .eq("is_default", true)
-    .single();
-
-  return defaultAccount?.id || "";
+    .maybeSingle();
+  if (data?.id) return data.id;
+  // Fallback: any account at all.
+  const { data: any } = await supabase.from("accounts").select("id").limit(1).maybeSingle();
+  if (!any?.id) throw new Error("No account configured. Create one in Settings first.");
+  return any.id;
 }
 
-async function setActiveAccount(channelId: string, slug: string): Promise<string> {
+async function buildCopySystemPrompt(memberName?: string): Promise<string> {
   const supabase = getSupabase();
-  const { data: account } = await supabase
-    .from("accounts")
-    .select("id, name")
-    .eq("slug", slug)
-    .single();
-
-  if (!account) return `No encontré la cuenta con slug \`${slug}\`. Usa \`/cuentas\` para ver las disponibles.`;
-
-  await supabase
-    .from("slack_channel_config")
-    .upsert({ channel_id: channelId, active_account_id: account.id }, { onConflict: "channel_id" });
-
-  return `Cuenta activa cambiada a *${account.name}*.`;
+  const { data: companyContext } = await supabase.from("company_context").select("*");
+  let memberProfile = null;
+  if (memberName) {
+    const { data } = await supabase.from("team_members").select("*").eq("name", memberName).single();
+    memberProfile = data;
+  }
+  const { data: ratedItems } = await supabase
+    .from("content_items")
+    .select("copy_text, rating")
+    .gte("rating", 4)
+    .not("rating", "is", null);
+  const ratedExamples = (ratedItems || [])
+    .map((p) => ({ content: ((p.copy_text || "") as string).slice(0, 1500), rating: p.rating as number }))
+    .filter((e) => e.content.length > 0);
+  return buildSystemPrompt(companyContext || [], memberProfile, ratedExamples);
 }
 
 // --- Intent interpreter ---
@@ -123,12 +87,6 @@ Available intents:
 - "discover_news": Show latest relevant news/articles.
 - "refine_post": Edit/refine an existing post. Needs post_id and instruction.
 - "list_posts": Show existing posts. May filter by status.
-- "generate_image": Generate an image. Extract the prompt.
-- "generate_content": Generate copy + image for a platform (instagram, twitter, linkedin).
-- "set_account": Switch the active brand/account.
-- "list_accounts": List available accounts/brands.
-- "list_images": Show recent generated images.
-- "delete_image": Delete a generated image by ID.
 - "approve_post": Approve a post for publishing. Needs post_id.
 - "list_social_accounts": List connected social accounts in PostSyncer (LinkedIn, X, etc).
 - "publish_post": Publish/schedule a post via PostSyncer. Needs post_id, publish_target (linkedin/x/ambas or numeric ids), publish_language (en/es), optional publish_when.
@@ -148,12 +106,6 @@ Return ONLY valid JSON:
   "post_id": "post ID if mentioned",
   "focus": "specific angle/focus",
   "status_filter": "draft/ready/used",
-  "account_slug": "account slug if switching",
-  "platform": "linkedin/instagram/twitter if mentioned",
-  "image_prompt": "image description if generating image",
-  "image_format": "1:1/4:5/9:16/16:9 if specified",
-  "image_model": "nano-banana",
-  "content_item_id": "content item ID if mentioned",
   "publish_target": "linkedin/x/ambas/account-id if publishing",
   "publish_language": "en/es if publishing",
   "publish_when": "natural date/time string if scheduling",
@@ -190,52 +142,68 @@ async function scrapeUrl(url: string): Promise<string> {
   return (data.data?.markdown || "").slice(0, 8000);
 }
 
+// Slack defaults: LinkedIn platform, Spanish copy. Override with options later if needed.
+const SLACK_DEFAULT_PLATFORM: Platform = "linkedin";
+const SLACK_DEFAULT_LANGUAGE: Language = "es";
+
 export async function handleGenerateFromUrl(url: string, memberName?: string, focus?: string): Promise<string> {
   const supabase = getSupabase();
-  const { data: companyContext } = await supabase.from("company_context").select("*");
-  let memberProfile = null;
-  if (memberName) {
-    const { data } = await supabase.from("team_members").select("*").eq("name", memberName).single();
-    memberProfile = data;
-  }
-  const { data: ratedPosts } = await supabase.from("posts").select("content_en, content_es, rating").gte("rating", 4).not("rating", "is", null);
-  const ratedExamples = (ratedPosts || []).map((p) => ({ content: ((p.content_en || p.content_es || "") as string).slice(0, 1500), rating: p.rating as number })).filter((e) => e.content.length > 0);
-  const systemPrompt = buildSystemPrompt(companyContext || [], memberProfile, ratedExamples);
+  const accountId = await getDefaultAccountId();
+  const systemPrompt = await buildCopySystemPrompt(memberName);
   const scrapedContent = await scrapeUrl(url);
-  const userPrompt = buildGenerateFromUrlPrompt(url, scrapedContent, focus);
-  const responseText = await generateText(systemPrompt, userPrompt);
-  const generated = parseJsonFromResponse(responseText);
-  if (!generated) throw new Error("Failed to parse AI response: " + responseText.slice(0, 200));
-  const { data: post, error } = await supabase.from("posts").insert({ content_en: generated.content_en || null, content_es: generated.content_es || null, source_url: url, source_summary: generated.source_summary || null, status: "draft", tags: [] }).select().single();
+  const userPrompt = buildPlatformFromUrlPrompt(
+    SLACK_DEFAULT_PLATFORM,
+    url,
+    scrapedContent,
+    SLACK_DEFAULT_LANGUAGE,
+    focus
+  );
+  const copyText = await generateText(systemPrompt, userPrompt);
+
+  const { data: item, error } = await supabase
+    .from("content_items")
+    .insert({
+      account_id: accountId,
+      platform: SLACK_DEFAULT_PLATFORM,
+      copy_text: copyText.trim(),
+      copy_language: SLACK_DEFAULT_LANGUAGE,
+      source_url: url,
+      status: "draft",
+      tags: [],
+      generated_by: "slack",
+      source_type: "ai_generated",
+    })
+    .select()
+    .single();
   if (error) throw new Error(error.message);
-  let result = `*Post generado desde URL* (ID: \`${post.id}\`)\n`;
-  if (post.content_en) result += `\n*English:*\n${post.content_en}\n`;
-  if (post.content_es) result += `\n*Español:*\n${post.content_es}\n`;
-  if (post.source_summary) result += `\n_Fuente: ${post.source_summary}_`;
-  return result;
+
+  return `*Post generado desde URL* (ID: \`${item.id}\`)\n\n${item.copy_text}`;
 }
 
 export async function handleGenerateFromIdea(idea: string, memberName?: string): Promise<string> {
   const supabase = getSupabase();
-  const { data: companyContext } = await supabase.from("company_context").select("*");
-  let memberProfile = null;
-  if (memberName) {
-    const { data } = await supabase.from("team_members").select("*").eq("name", memberName).single();
-    memberProfile = data;
-  }
-  const { data: ratedPosts } = await supabase.from("posts").select("content_en, content_es, rating").gte("rating", 4).not("rating", "is", null);
-  const ratedExamples = (ratedPosts || []).map((p) => ({ content: ((p.content_en || p.content_es || "") as string).slice(0, 1500), rating: p.rating as number })).filter((e) => e.content.length > 0);
-  const systemPrompt = buildSystemPrompt(companyContext || [], memberProfile, ratedExamples);
-  const userPrompt = buildGenerateFromIdeaPrompt(idea);
-  const responseText = await generateText(systemPrompt, userPrompt);
-  const generated = parseJsonFromResponse(responseText);
-  if (!generated) throw new Error("Failed to parse AI response: " + responseText.slice(0, 200));
-  const { data: post, error } = await supabase.from("posts").insert({ content_en: generated.content_en || null, content_es: generated.content_es || null, source_url: null, source_summary: null, status: "draft", tags: [] }).select().single();
+  const accountId = await getDefaultAccountId();
+  const systemPrompt = await buildCopySystemPrompt(memberName);
+  const userPrompt = buildPlatformCopyPrompt(SLACK_DEFAULT_PLATFORM, idea, SLACK_DEFAULT_LANGUAGE);
+  const copyText = await generateText(systemPrompt, userPrompt);
+
+  const { data: item, error } = await supabase
+    .from("content_items")
+    .insert({
+      account_id: accountId,
+      platform: SLACK_DEFAULT_PLATFORM,
+      copy_text: copyText.trim(),
+      copy_language: SLACK_DEFAULT_LANGUAGE,
+      status: "draft",
+      tags: [],
+      generated_by: "slack",
+      source_type: "ai_generated",
+    })
+    .select()
+    .single();
   if (error) throw new Error(error.message);
-  let result = `*Post generado desde idea* (ID: \`${post.id}\`)\n`;
-  if (post.content_en) result += `\n*English:*\n${post.content_en}\n`;
-  if (post.content_es) result += `\n*Español:*\n${post.content_es}\n`;
-  return result;
+
+  return `*Post generado desde idea* (ID: \`${item.id}\`)\n\n${item.copy_text}`;
 }
 
 export async function handleDiscoverNews(): Promise<string> {
@@ -253,35 +221,45 @@ export async function handleDiscoverNews(): Promise<string> {
 
 export async function handleRefinePost(postId: string, instruction: string): Promise<string> {
   const supabase = getSupabase();
-  const { data: post, error } = await supabase.from("posts").select("*").eq("id", postId).single();
-  if (error || !post) return `No encontré el post con ID \`${postId}\`.`;
-  const responseText = await generateText(
-    "You rewrite LinkedIn posts based on user instructions. Keep the same general topic but adjust based on the instruction. Do NOT mention or promote Aloud unless the user explicitly asks for it.",
-    `ENGLISH:\n${post.content_en || "N/A"}\n\nSPANISH:\n${post.content_es || "N/A"}\n\nINSTRUCTION: ${instruction}\n\nRewrite both versions. Format as JSON:\n{"content_en": "...", "content_es": "..."}`
+  const { data: item, error } = await supabase.from("content_items").select("*").eq("id", postId).single();
+  if (error || !item) return `No encontré el post con ID \`${postId}\`.`;
+
+  const langName = item.copy_language === "en" ? "English" : "Spanish";
+  const rewritten = await generateText(
+    `You rewrite social media posts based on user instructions. Keep the same general topic but adjust based on the instruction. Do NOT mention or promote Aloud unless the user explicitly asks for it. Respond ONLY with the rewritten post text — no JSON, no labels, no quotes.`,
+    `Current post (${langName}, platform: ${item.platform}):\n\n${item.copy_text || ""}\n\nINSTRUCTION: ${instruction}\n\nRewrite the post in ${langName} following the instruction.`
   );
-  const generated = parseJsonFromResponse(responseText);
-  if (!generated) throw new Error("Failed to parse AI response: " + responseText.slice(0, 200));
-  const { data: updated, error: updateError } = await supabase.from("posts").update({ content_en: generated.content_en || post.content_en, content_es: generated.content_es || post.content_es }).eq("id", postId).select().single();
+  const newCopy = rewritten.trim() || item.copy_text;
+
+  const { data: updated, error: updateError } = await supabase
+    .from("content_items")
+    .update({ copy_text: newCopy })
+    .eq("id", postId)
+    .select()
+    .single();
   if (updateError) throw new Error(updateError.message);
-  let result = `*Post refinado* (ID: \`${updated.id}\`)\n`;
-  if (updated.content_en) result += `\n*English:*\n${updated.content_en}\n`;
-  if (updated.content_es) result += `\n*Español:*\n${updated.content_es}\n`;
-  return result;
+
+  return `*Post refinado* (ID: \`${updated.id}\`)\n\n${updated.copy_text}`;
 }
 
 export async function handleListPosts(statusFilter?: string): Promise<string> {
   const supabase = getSupabase();
-  let query = supabase.from("posts").select("id, content_en, content_es, status, used_by, rating, created_at").order("created_at", { ascending: false }).limit(5);
+  let query = supabase
+    .from("content_items")
+    .select("id, copy_text, copy_language, platform, status, used_by, rating, created_at")
+    .order("created_at", { ascending: false })
+    .limit(5);
   if (statusFilter) query = query.eq("status", statusFilter);
   const { data, error } = await query;
   if (error) throw new Error(error.message);
   if (!data || data.length === 0) return "No hay posts" + (statusFilter ? ` con estado "${statusFilter}"` : "") + ".";
   let result = `*Últimos posts${statusFilter ? ` (${statusFilter})` : ""}:*\n\n`;
-  for (const post of data) {
-    const preview = ((post.content_es || post.content_en || "") as string).slice(0, 100);
-    const rating = post.rating ? ` | ${post.rating}/5` : "";
-    const assignee = post.used_by ? ` | ${post.used_by}` : "";
-    result += `• \`${post.id.slice(0, 8)}\` [${post.status}${rating}${assignee}]\n  _${preview}..._\n\n`;
+  for (const item of data) {
+    const preview = ((item.copy_text || "") as string).slice(0, 100);
+    const rating = item.rating ? ` | ${item.rating}/5` : "";
+    const assignee = item.used_by ? ` | ${item.used_by}` : "";
+    const lang = item.copy_language ? ` | ${item.copy_language}` : "";
+    result += `• \`${item.id.slice(0, 8)}\` [${item.platform}${lang} | ${item.status}${rating}${assignee}]\n  _${preview}..._\n\n`;
   }
   return result;
 }
@@ -297,229 +275,26 @@ export async function handleGeneralChat(userMessage: string): Promise<string> {
   );
 }
 
-// --- NEW handlers ---
-
-export async function handleGenerateImage(
-  prompt: string,
-  channelId: string,
-  format?: ImageFormat,
-  accountSlug?: string
-): Promise<{ text: string; imageBuffer?: Buffer }> {
-  const supabase = getSupabase();
-
-  let accountId: string;
-  if (accountSlug) {
-    const { data } = await supabase.from("accounts").select("id").eq("slug", accountSlug).single();
-    if (!data) return { text: `No encontré la cuenta \`${accountSlug}\`. Usa \`/cuentas\` para ver las disponibles.` };
-    accountId = data.id;
-  } else {
-    accountId = await getActiveAccountId(channelId);
-  }
-
-  if (!accountId) return { text: "No hay cuenta activa. Usa `/cuenta [slug]` para seleccionar una." };
-
-  const result = await generateContentImage({
-    prompt,
-    accountId,
-    format: format || "1:1",
-    useBrandStyle: true,
-  });
-
-  // Save as content item
-  const { data: item } = await supabase
-    .from("content_items")
-    .insert({
-      account_id: accountId,
-      platform: "instagram",
-      content_type: "image_only",
-      image_storage_path: result.storagePath,
-      image_public_url: result.publicUrl,
-      image_format: format || "1:1",
-      image_model: "nano-banana",
-      image_prompt: result.enrichedPrompt,
-      status: "draft",
-      tags: [],
-      generated_by: "slack",
-    })
-    .select()
-    .single();
-
-  // Link generation to content item
-  if (item) {
-    await supabase.from("image_generations").update({ content_item_id: item.id }).eq("id", result.generationId);
-  }
-
-  // Return image buffer for Slack upload
-  const imageResponse = await fetch(result.publicUrl);
-  const imageBuffer = Buffer.from(await imageResponse.arrayBuffer());
-
-  return {
-    text: `*Imagen generada* (ID: \`${item?.id?.slice(0, 8) || "?"}\`)\nPrompt: _${result.enrichedPrompt.slice(0, 150)}..._`,
-    imageBuffer,
-  };
-}
-
-export async function handleGenerateContent(
-  idea: string,
-  channelId: string,
-  platform: Platform = "instagram",
-  format?: ImageFormat,
-): Promise<{ text: string; imageBuffer?: Buffer }> {
-  const accountId = await getActiveAccountId(channelId);
-  if (!accountId) return { text: "No hay cuenta activa. Usa `/cuenta [slug]` para seleccionar una." };
-
-  const supabase = getSupabase();
-
-  // Generate copy
-  const { data: companyContext } = await supabase.from("company_context").select("*");
-  const systemPrompt = buildSystemPrompt(companyContext || [], null, []);
-  const copyPrompt = buildPlatformCopyPrompt(platform, idea, "es");
-  const copyText = await generateText(systemPrompt, copyPrompt);
-
-  // Generate image
-  const imgResult = await generateContentImage({
-    prompt: idea,
-    accountId,
-    format: format || "1:1",
-    useBrandStyle: true,
-  });
-
-  // Save content item
-  const { data: item } = await supabase
-    .from("content_items")
-    .insert({
-      account_id: accountId,
-      platform,
-      content_type: "copy_and_image",
-      copy_text: copyText,
-      copy_language: "es",
-      image_storage_path: imgResult.storagePath,
-      image_public_url: imgResult.publicUrl,
-      image_format: format || "1:1",
-      image_model: "nano-banana",
-      image_prompt: imgResult.enrichedPrompt,
-      status: "draft",
-      tags: [],
-      generated_by: "slack",
-    })
-    .select()
-    .single();
-
-  if (item) {
-    await supabase.from("image_generations").update({ content_item_id: item.id }).eq("id", imgResult.generationId);
-  }
-
-  const imageResponse = await fetch(imgResult.publicUrl);
-  const imageBuffer = Buffer.from(await imageResponse.arrayBuffer());
-
-  return {
-    text: `*Contenido generado para ${platform}* (ID: \`${item?.id?.slice(0, 8) || "?"}\`)\n\n*Copy:*\n${copyText}`,
-    imageBuffer,
-  };
-}
-
-export async function handleListAccounts(): Promise<string> {
-  const supabase = getSupabase();
-  const { data } = await supabase.from("accounts").select("name, slug, is_default").order("name");
-  if (!data || data.length === 0) return "No hay cuentas creadas.";
-  let result = "*Cuentas disponibles:*\n\n";
-  for (const a of data) {
-    result += `• *${a.name}* (\`${a.slug}\`)${a.is_default ? " — default" : ""}\n`;
-  }
-  result += "\n_Usa `/cuenta [slug]` para cambiar la cuenta activa._";
-  return result;
-}
-
-export async function handleListImages(channelId: string): Promise<string> {
-  const accountId = await getActiveAccountId(channelId);
-  const supabase = getSupabase();
-  const { data } = await supabase
-    .from("content_items")
-    .select("id, platform, image_format, image_model, status, created_at, image_prompt")
-    .eq("account_id", accountId)
-    .not("image_public_url", "is", null)
-    .order("created_at", { ascending: false })
-    .limit(10);
-
-  if (!data || data.length === 0) return "No hay imágenes generadas para esta cuenta.";
-
-  let result = "*Últimas imágenes:*\n\n";
-  for (const item of data) {
-    const prompt = (item.image_prompt || "").slice(0, 80);
-    result += `• \`${item.id.slice(0, 8)}\` [${item.platform} | ${item.image_format} | ${item.image_model}] ${item.status}\n  _${prompt}..._\n\n`;
-  }
-  return result;
-}
-
-export async function handleDeleteImage(contentItemId: string): Promise<string> {
-  const supabase = getSupabase();
-  const { data: item } = await supabase
-    .from("content_items")
-    .select("id, image_storage_path")
-    .eq("id", contentItemId)
-    .single();
-
-  if (!item) {
-    // Try partial ID match
-    const { data: items } = await supabase
-      .from("content_items")
-      .select("id, image_storage_path")
-      .like("id", `${contentItemId}%`)
-      .limit(1);
-    if (!items || items.length === 0) return `No encontré contenido con ID \`${contentItemId}\`.`;
-    const found = items[0];
-    await supabase.from("content_items").delete().eq("id", found.id);
-    return `Contenido \`${found.id.slice(0, 8)}\` eliminado.`;
-  }
-
-  await supabase.from("content_items").delete().eq("id", item.id);
-  return `Contenido \`${item.id.slice(0, 8)}\` eliminado.`;
-}
-
-export async function handleUploadReference(
-  fileBuffer: Buffer,
-  fileName: string,
-  channelId: string,
-  description?: string
-): Promise<string> {
-  const accountId = await getActiveAccountId(channelId);
-  if (!accountId) return "No hay cuenta activa. Usa `/cuenta [slug]` primero.";
-
-  const ext = fileName.split(".").pop() || "png";
-  const imageId = crypto.randomUUID();
-  const storagePath = `accounts/${accountId}/references/${imageId}.${ext}`;
-  const publicUrl = await uploadFile(storagePath, fileBuffer, `image/${ext}`);
-
-  const supabase = getSupabase();
-  await supabase.from("reference_images").insert({
-    account_id: accountId,
-    storage_path: storagePath,
-    public_url: publicUrl,
-    description: description || null,
-    uploaded_via: "slack",
-  });
-
-  return `Imagen de referencia guardada para la cuenta activa. ${description ? `Descripción: "${description}"` : ""}`;
-}
-
 export async function handleSaveManual(text: string, language: Language): Promise<string> {
   const supabase = getSupabase();
-  const { data: post, error } = await supabase
-    .from("posts")
+  const accountId = await getDefaultAccountId();
+  const { data: item, error } = await supabase
+    .from("content_items")
     .insert({
-      content_en: language === "en" ? text : null,
-      content_es: language === "es" ? text : null,
-      source_url: null,
-      source_summary: null,
+      account_id: accountId,
+      platform: SLACK_DEFAULT_PLATFORM,
+      copy_text: text,
+      copy_language: language,
       source_type: "manual",
       status: "draft",
       tags: [],
+      generated_by: "slack",
     })
     .select()
     .single();
   if (error) throw new Error(error.message);
 
-  return `*Copy guardado tal cual* (ID: \`${post.id}\`) — idioma: ${language}\nUsa \`/aprobar ${post.id}\` y luego \`/publicar ${post.id} [linkedin|x|ambas]\` para programarlo.`;
+  return `*Copy guardado tal cual* (ID: \`${item.id}\`) — idioma: ${language}\nUsa \`/aprobar ${item.id}\` y luego \`/publicar ${item.id} [linkedin|x|ambas]\` para programarlo.`;
 }
 
 // --- PostSyncer handlers ---
@@ -601,12 +376,7 @@ function resolveTargetAccountIds(
   return { ids, resolved };
 }
 
-// Looks up an item in either `posts` or `content_items` so /aprobar /publicar /estado
-// can target both the legacy LinkedIn flow and the multi-platform content flow.
-type PublishableSource = "posts" | "content_items";
-
 interface PublishableRecord {
-  source: PublishableSource;
   id: string;
   status: string;
   text_en: string | null;
@@ -621,50 +391,25 @@ interface PublishableRecord {
 
 async function findPublishable(id: string): Promise<PublishableRecord | null> {
   const supabase = getSupabase();
-
-  const { data: post } = await supabase
-    .from("posts")
-    .select("id, status, content_en, content_es, approved_at, postsyncer_post_id, published_to, scheduled_at, publish_language")
-    .eq("id", id)
-    .maybeSingle();
-  if (post) {
-    return {
-      source: "posts",
-      id: post.id,
-      status: post.status,
-      text_en: post.content_en,
-      text_es: post.content_es,
-      default_language: null,
-      approved_at: post.approved_at,
-      postsyncer_post_id: post.postsyncer_post_id,
-      published_to: post.published_to,
-      scheduled_at: post.scheduled_at,
-      publish_language: post.publish_language,
-    };
-  }
-
   const { data: item } = await supabase
     .from("content_items")
     .select("id, status, copy_text, copy_language, approved_at, postsyncer_post_id, published_to, scheduled_at, publish_language")
     .eq("id", id)
     .maybeSingle();
-  if (item) {
-    return {
-      source: "content_items",
-      id: item.id,
-      status: item.status,
-      text_en: item.copy_language === "en" ? item.copy_text : null,
-      text_es: item.copy_language === "es" ? item.copy_text : null,
-      default_language: item.copy_language as Language | null,
-      approved_at: item.approved_at,
-      postsyncer_post_id: item.postsyncer_post_id,
-      published_to: item.published_to,
-      scheduled_at: item.scheduled_at,
-      publish_language: item.publish_language,
-    };
-  }
+  if (!item) return null;
 
-  return null;
+  return {
+    id: item.id,
+    status: item.status,
+    text_en: item.copy_language === "en" ? item.copy_text : null,
+    text_es: item.copy_language === "es" ? item.copy_text : null,
+    default_language: item.copy_language as Language | null,
+    approved_at: item.approved_at,
+    postsyncer_post_id: item.postsyncer_post_id,
+    published_to: item.published_to,
+    scheduled_at: item.scheduled_at,
+    publish_language: item.publish_language,
+  };
 }
 
 export async function handleApprovePost(postId: string): Promise<string> {
@@ -675,7 +420,7 @@ export async function handleApprovePost(postId: string): Promise<string> {
 
   const supabase = getSupabase();
   const { error: updateError } = await supabase
-    .from(record.source)
+    .from("content_items")
     .update({ status: "ready", approved_at: new Date().toISOString(), approved_by: "slack" })
     .eq("id", postId);
   if (updateError) throw new Error(updateError.message);
@@ -754,7 +499,7 @@ export async function handlePublishPost(
   const platforms = Array.from(new Set(resolved.map((a) => a.platform)));
   const supabase = getSupabase();
   await supabase
-    .from(record.source)
+    .from("content_items")
     .update({
       status: "used",
       postsyncer_post_id: String(created.id ?? ""),
@@ -767,16 +512,14 @@ export async function handlePublishPost(
 
   const accountList = resolved.map((a) => `${a.platform}/${a.name}`).join(", ");
   const when_msg = scheduledAt ? `agendado para ${scheduledAt}` : "publicado ahora";
-  const sourceLabel = record.source === "content_items" ? " (content item)" : "";
-  return `*Post enviado a PostSyncer*${sourceLabel} (ID PostSyncer: \`${created.id}\`)\n• Cuentas: ${accountList}\n• ${when_msg}\n• Idioma: ${resolvedLanguage}`;
+  return `*Post enviado a PostSyncer* (ID PostSyncer: \`${created.id}\`)\n• Cuentas: ${accountList}\n• ${when_msg}\n• Idioma: ${resolvedLanguage}`;
 }
 
 export async function handlePostStatus(postId: string): Promise<string> {
   const record = await findPublishable(postId);
   if (!record) return `No encontré el post con ID \`${postId}\`.`;
 
-  const sourceLabel = record.source === "content_items" ? "content item" : "post";
-  let result = `*${sourceLabel.charAt(0).toUpperCase() + sourceLabel.slice(1)} \`${postId}\`*\n• Estado local: ${record.status}\n`;
+  let result = `*Post \`${postId}\`*\n• Estado local: ${record.status}\n`;
   if (record.approved_at) result += `• Aprobado: ${record.approved_at}\n`;
   if (record.published_to?.length) result += `• Plataformas: ${record.published_to.join(", ")}\n`;
   if (record.publish_language) result += `• Idioma: ${record.publish_language}\n`;
@@ -821,48 +564,6 @@ function parseCommand(text: string): SlackAction | null {
   if (postsMatch) return { intent: "list_posts", status_filter: postsMatch[1]?.toLowerCase() };
 
   if (/^\/ayuda\s*$/i.test(text)) return { intent: "general_chat" };
-
-  // NEW commands
-  const imagenMatch = text.match(/^\/imagen\s+(.+)/i);
-  if (imagenMatch) {
-    const args = imagenMatch[1];
-    const formatMatch = args.match(/--formato\s+([\d:]+)/i);
-    const modelMatch = args.match(/--modelo\s+([\w-]+)/i);
-    const cuentaMatch = args.match(/--cuenta\s+([\w-]+)/i);
-    const prompt = args.replace(/--formato\s+[\d:]+/gi, "").replace(/--modelo\s+[\w-]+/gi, "").replace(/--cuenta\s+[\w-]+/gi, "").trim();
-    return {
-      intent: "generate_image",
-      image_prompt: prompt,
-      image_format: (formatMatch?.[1] as ImageFormat) || undefined,
-      image_model: "nano-banana",
-      account_slug: cuentaMatch?.[1],
-    };
-  }
-
-  const contenidoMatch = text.match(/^\/contenido\s+(.+)/i);
-  if (contenidoMatch) {
-    const args = contenidoMatch[1];
-    const platMatch = args.match(/--plataforma\s+(\w+)/i);
-    const formatMatch = args.match(/--formato\s+([\d:]+)/i);
-    const modelMatch = args.match(/--modelo\s+([\w-]+)/i);
-    const idea = args.replace(/--plataforma\s+\w+/gi, "").replace(/--formato\s+[\d:]+/gi, "").replace(/--modelo\s+[\w-]+/gi, "").trim();
-    return {
-      intent: "generate_content",
-      idea,
-      platform: (platMatch?.[1] as Platform) || undefined,
-      image_format: (formatMatch?.[1] as ImageFormat) || undefined,
-      image_model: "nano-banana",
-    };
-  }
-
-  const cuentaMatch = text.match(/^\/cuenta\s+([\w-]+)\s*$/i);
-  if (cuentaMatch) return { intent: "set_account", account_slug: cuentaMatch[1] };
-
-  if (/^\/cuentas\s*$/i.test(text)) return { intent: "list_accounts" };
-  if (/^\/imagenes\s*$/i.test(text)) return { intent: "list_images" };
-
-  const borrarMatch = text.match(/^\/borrar-imagen\s+([a-f0-9-]+)/i);
-  if (borrarMatch) return { intent: "delete_image", content_item_id: borrarMatch[1] };
 
   // /copia [es|en] <texto>  — defaults to es when language is omitted.
   const copiaMatch = text.match(/^\/copia\s+(?:(en|es)\s+)?([\s\S]+)/i);
@@ -918,22 +619,6 @@ const HELP_MESSAGE = `*Comandos disponibles:*
 • \`/refinar [ID] [instrucción]\` — Refina un post
 • \`/posts\` — Lista posts (filtrar: \`/posts draft\`)
 
-*Imágenes:*
-• \`/imagen [prompt]\` — Genera imagen
-• \`/imagen [prompt] --formato 16:9\` — Con formato
-• \`/imagen [prompt] --modelo nano-banana\` — Con modelo
-• \`/imagen [prompt] --cuenta aloud\` — Para una cuenta específica
-• \`/imagenes\` — Lista imágenes recientes
-• \`/borrar-imagen [ID]\` — Elimina una imagen
-
-*Contenido (copy + imagen):*
-• \`/contenido [idea] --plataforma instagram\` — Copy + imagen
-• \`/contenido [idea] --plataforma twitter --formato 16:9\`
-
-*Cuentas:*
-• \`/cuenta [slug]\` — Cambia cuenta activa
-• \`/cuentas\` — Lista cuentas disponibles
-
 *Texto literal (sin IA):*
 • \`/copia [texto]\` — Guarda el copy tal cual (default español)
 • \`/copia en [texto]\` — Guarda en inglés
@@ -949,7 +634,6 @@ const HELP_MESSAGE = `*Comandos disponibles:*
 *Otros:*
 • \`/noticias\` — Noticias relevantes
 • \`/ayuda\` — Este mensaje
-• Sube una imagen y mencióname para guardarla como referente
 
 También puedes escribir en lenguaje natural.`;
 
@@ -957,67 +641,14 @@ También puedes escribir en lenguaje natural.`;
 
 export interface SlackProcessResult {
   text: string;
-  imageBuffer?: Buffer;
 }
 
 export async function processSlackMessage(
   text: string,
-  channelId: string,
-  files?: { url: string; name: string }[]
+  channelId: string
 ): Promise<SlackProcessResult> {
   try {
     const cleanText = text.replace(/<@[A-Z0-9]+>/g, "").trim();
-
-    // Handle file uploads
-    if (files && files.length > 0) {
-      const file = files[0];
-      const response = await fetch(file.url, {
-        headers: { Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}` },
-      });
-      const buffer = Buffer.from(await response.arrayBuffer());
-      const base64 = buffer.toString("base64");
-
-      // If text contains a generation prompt → use image as one-time reference for generation
-      const hasGenerationIntent = cleanText && (
-        /^\/imagen\s/i.test(cleanText) ||
-        /^\/contenido\s/i.test(cleanText) ||
-        /genera|crea|haz|diseña|make|create|generate/i.test(cleanText)
-      );
-
-      if (hasGenerationIntent && cleanText) {
-        // Use as one-time example for image generation
-        const prompt = cleanText.replace(/^\/imagen\s+/i, "").replace(/^\/contenido\s+/i, "").trim();
-        const accountId = await getActiveAccountId(channelId);
-        if (!accountId) return { text: "No hay cuenta activa. Usa `/cuenta [slug]` primero." };
-
-        const result = await generateContentImage({
-          prompt,
-          accountId,
-          format: "1:1",
-          useBrandStyle: true,
-          referenceImageBase64: base64,
-        });
-
-        const supabase = getSupabase();
-        const { data: item } = await supabase.from("content_items").insert({
-          account_id: accountId, platform: "instagram", content_type: "image_only",
-          image_storage_path: result.storagePath, image_public_url: result.publicUrl,
-          image_format: "1:1", image_model: "nano-banana", image_prompt: result.enrichedPrompt,
-          status: "draft", tags: [], generated_by: "slack",
-        }).select().single();
-
-        if (item) await supabase.from("image_generations").update({ content_item_id: item.id }).eq("id", result.generationId);
-
-        const imgResponse = await fetch(result.publicUrl);
-        const imageBuffer = Buffer.from(await imgResponse.arrayBuffer());
-
-        return { text: `*Imagen generada usando tu referencia* (ID: \`${item?.id?.slice(0, 8) || "?"}\`)`, imageBuffer };
-      }
-
-      // Otherwise → save as permanent reference
-      const msg = await handleUploadReference(buffer, file.name, channelId, cleanText || undefined);
-      return { text: msg };
-    }
 
     if (!cleanText) {
       return { text: "Hola! Soy Eywa, el bot de Aloud Content Lab.\n\n" + HELP_MESSAGE };
@@ -1050,28 +681,6 @@ export async function processSlackMessage(
 
         case "list_posts":
           return { text: await handleListPosts(command.status_filter) };
-
-        case "generate_image":
-          if (!command.image_prompt) return { text: "Necesito una descripción. Ejemplo: `/imagen abstract gradient for tech post`" };
-          return await handleGenerateImage(command.image_prompt, channelId, command.image_format, command.account_slug);
-
-        case "generate_content":
-          if (!command.idea) return { text: "Necesito una idea. Ejemplo: `/contenido AI en educación --plataforma instagram`" };
-          return await handleGenerateContent(command.idea, channelId, command.platform, command.image_format);
-
-        case "set_account":
-          if (!command.account_slug) return { text: "Necesito el slug. Ejemplo: `/cuenta aloud`" };
-          return { text: await setActiveAccount(channelId, command.account_slug) };
-
-        case "list_accounts":
-          return { text: await handleListAccounts() };
-
-        case "list_images":
-          return { text: await handleListImages(channelId) };
-
-        case "delete_image":
-          if (!command.content_item_id) return { text: "Necesito el ID. Ejemplo: `/borrar-imagen abc123`" };
-          return { text: await handleDeleteImage(command.content_item_id) };
 
         case "approve_post":
           if (!command.post_id) return { text: "Necesito el ID. Ejemplo: `/aprobar abc123`" };
@@ -1113,22 +722,6 @@ export async function processSlackMessage(
         return { text: await handleRefinePost(action.post_id, action.instruction) };
       case "list_posts":
         return { text: await handleListPosts(action.status_filter) };
-      case "generate_image":
-        if (!action.image_prompt) return { text: "Necesito una descripción para la imagen." };
-        return await handleGenerateImage(action.image_prompt, channelId, action.image_format, action.account_slug);
-      case "generate_content":
-        if (!action.idea) return { text: "Necesito una idea para el contenido." };
-        return await handleGenerateContent(action.idea, channelId, action.platform, action.image_format);
-      case "set_account":
-        if (!action.account_slug) return { text: "¿A qué cuenta quieres cambiar?" };
-        return { text: await setActiveAccount(channelId, action.account_slug) };
-      case "list_accounts":
-        return { text: await handleListAccounts() };
-      case "list_images":
-        return { text: await handleListImages(channelId) };
-      case "delete_image":
-        if (!action.content_item_id) return { text: "Necesito el ID de la imagen." };
-        return { text: await handleDeleteImage(action.content_item_id) };
       case "approve_post":
         if (!action.post_id) return { text: "Necesito el ID del post a aprobar." };
         return { text: await handleApprovePost(action.post_id) };

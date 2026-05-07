@@ -1,12 +1,28 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSupabase } from "@/lib/supabase";
 import { generateText } from "@/lib/gemini";
-import { generateContentImage } from "@/lib/image-gen";
-import { buildPlatformCopyPrompt, PLATFORMS } from "@/lib/platforms";
+import {
+  buildPlatformCopyPrompt,
+  buildPlatformFromUrlPrompt,
+} from "@/lib/platforms";
 import { buildSystemPrompt } from "@/lib/prompts";
-import type { Platform, ContentType, ImageFormat, Language } from "@/lib/types";
+import type { Platform, Language } from "@/lib/types";
 
 export const maxDuration = 60;
+
+async function scrapeUrl(url: string): Promise<string> {
+  const response = await fetch("https://api.firecrawl.dev/v1/scrape", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${process.env.FIRECRAWL_API_KEY}`,
+    },
+    body: JSON.stringify({ url, formats: ["markdown"] }),
+  });
+  const data = await response.json();
+  if (!data.success) throw new Error(data.error || "Failed to scrape URL");
+  return (data.data?.markdown || "").slice(0, 8000);
+}
 
 export async function POST(req: NextRequest) {
   try {
@@ -14,136 +30,94 @@ export async function POST(req: NextRequest) {
     const {
       account_id,
       platform,
-      content_type,
       copy_input,
       copy_language = "es",
       member_name,
-      image_prompt,
-      image_format,
-      image_model: _image_model,
-      use_brand_style = true,
-      reference_image_base64,
       source_type = "ai_generated",
+      url,
+      focus,
     } = body as {
       account_id: string;
       platform: Platform;
-      content_type: ContentType;
       copy_input?: string;
       copy_language?: Language;
       member_name?: string;
-      image_prompt?: string;
-      image_format?: ImageFormat;
-      image_model?: string;
-      use_brand_style?: boolean;
-      reference_image_base64?: string;
       source_type?: "ai_generated" | "manual";
+      url?: string;
+      focus?: string;
     };
 
-    if (!account_id || !platform || !content_type) {
+    if (!account_id || !platform) {
       return NextResponse.json(
-        { error: "account_id, platform, and content_type are required" },
+        { error: "account_id and platform are required" },
         { status: 400 }
       );
     }
 
     const supabase = getSupabase();
-    let copyText: string | null = null;
-    let imagePublicUrl: string | null = null;
-    let imageStoragePath: string | null = null;
-    let finalImagePrompt: string | null = null;
-    const resolvedFormat = image_format || PLATFORMS[platform].defaultFormat;
-
-    // Generate copy if needed
-    if (content_type !== "image_only") {
-      if (!copy_input) {
-        return NextResponse.json({ error: "copy_input is required for copy generation" }, { status: 400 });
-      }
-
-      if (source_type === "manual") {
-        // Save user text verbatim, skip Gemini.
-        copyText = copy_input;
-      } else {
-        // Get account-specific company context and member profile for system prompt
-        const { data: companyContext } = await supabase.from("company_context").select("*").eq("account_id", account_id);
-        let memberProfile = null;
-        if (member_name) {
-          const { data } = await supabase
-            .from("team_members")
-            .select("*")
-            .eq("name", member_name)
-            .single();
-          memberProfile = data;
-        }
-
-        const { data: ratedPosts } = await supabase
-          .from("posts")
-          .select("content_en, content_es, rating")
-          .gte("rating", 4)
-          .not("rating", "is", null);
-
-        const ratedExamples = (ratedPosts || [])
-          .map((p) => ({
-            content: ((p.content_en || p.content_es || "") as string).slice(0, 1500),
-            rating: p.rating as number,
-          }))
-          .filter((e) => e.content.length > 0);
-
-        const systemPrompt = buildSystemPrompt(companyContext || [], memberProfile, ratedExamples);
-        const userPrompt = buildPlatformCopyPrompt(platform, copy_input, copy_language);
-
-        copyText = await generateText(systemPrompt, userPrompt);
-      }
+    const isUrlMode = !!url;
+    if (!isUrlMode && !copy_input) {
+      return NextResponse.json({ error: "copy_input or url is required" }, { status: 400 });
+    }
+    if (isUrlMode && source_type === "manual") {
+      return NextResponse.json({ error: "Manual mode is not compatible with URL input" }, { status: 400 });
     }
 
-    // Generate image if needed
-    if (content_type !== "copy_only") {
-      const promptForImage = image_prompt || copy_input || "Creative social media visual";
+    let copyText: string;
+    if (source_type === "manual") {
+      copyText = copy_input!;
+    } else {
+      const { data: companyContext } = await supabase.from("company_context").select("*").eq("account_id", account_id);
+      let memberProfile = null;
+      if (member_name) {
+        const { data } = await supabase
+          .from("team_members")
+          .select("*")
+          .eq("name", member_name)
+          .single();
+        memberProfile = data;
+      }
 
-      const result = await generateContentImage({
-        prompt: promptForImage,
-        accountId: account_id,
-        format: resolvedFormat as ImageFormat,
-        useBrandStyle: use_brand_style,
-        referenceImageBase64: reference_image_base64,
-      });
+      const { data: ratedPosts } = await supabase
+        .from("posts")
+        .select("content_en, content_es, rating")
+        .gte("rating", 4)
+        .not("rating", "is", null);
 
-      imagePublicUrl = result.publicUrl;
-      imageStoragePath = result.storagePath;
-      finalImagePrompt = result.enrichedPrompt;
+      const ratedExamples = (ratedPosts || [])
+        .map((p) => ({
+          content: ((p.content_en || p.content_es || "") as string).slice(0, 1500),
+          rating: p.rating as number,
+        }))
+        .filter((e) => e.content.length > 0);
+
+      const systemPrompt = buildSystemPrompt(companyContext || [], memberProfile, ratedExamples);
+
+      const userPrompt = isUrlMode
+        ? buildPlatformFromUrlPrompt(platform, url!, await scrapeUrl(url!), copy_language, focus)
+        : buildPlatformCopyPrompt(platform, copy_input!, copy_language);
+
+      copyText = await generateText(systemPrompt, userPrompt);
     }
 
-    // Save content item
     const { data: contentItem, error } = await supabase
       .from("content_items")
       .insert({
         account_id,
         platform,
-        content_type,
         copy_text: copyText,
-        copy_language: content_type !== "image_only" ? copy_language : null,
-        image_storage_path: imageStoragePath,
-        image_public_url: imagePublicUrl,
-        image_format: content_type !== "copy_only" ? resolvedFormat : null,
-        image_model: content_type !== "copy_only" ? "nano-banana" : null,
-        image_prompt: finalImagePrompt,
+        copy_language,
         status: "draft",
         tags: [],
         generated_by: "web",
         source_type,
+        source_url: url || null,
       })
       .select()
       .single();
 
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 500 });
-    }
-
-    // Link image generation to content item
-    if (imageStoragePath) {
-      await supabase
-        .from("image_generations")
-        .update({ content_item_id: contentItem.id })
-        .eq("storage_path", imageStoragePath);
     }
 
     return NextResponse.json(contentItem);

@@ -6,28 +6,6 @@ export type Language = "en" | "es";
 
 export type SourceType = "ai_generated" | "manual";
 
-export interface Post {
-  id: string;
-  content_en: string | null;
-  content_es: string | null;
-  source_url: string | null;
-  source_summary: string | null;
-  source_type: SourceType;
-  status: PostStatus;
-  used_by: TeamMember | null;
-  rating: number | null;
-  tags: string[];
-  created_at: string;
-  updated_at: string;
-  approved_by: string | null;
-  approved_at: string | null;
-  postsyncer_post_id: string | null;
-  postsyncer_account_ids: number[] | null;
-  published_to: string[];
-  scheduled_at: string | null;
-  publish_language: Language | null;
-}
-
 export interface TeamMemberProfile {
   id: string;
   name: TeamMember;
@@ -46,20 +24,10 @@ export interface CompanyContext {
 
 export type Platform = "linkedin" | "instagram" | "twitter";
 
-export type ContentType = "copy_only" | "image_only" | "copy_and_image";
-
-export type ImageFormat = "1:1" | "4:5" | "9:16" | "16:9";
-
-export type ImageModel = "nano-banana";
-
 export interface Account {
   id: string;
   name: string;
   slug: string;
-  color_palette: string[];
-  brand_style: string | null;
-  logo_path: string | null;
-  fonts: string | null;
   is_default: boolean;
   created_at: string;
   updated_at: string;
@@ -69,14 +37,8 @@ export interface ContentItem {
   id: string;
   account_id: string;
   platform: Platform;
-  content_type: ContentType;
   copy_text: string | null;
   copy_language: Language | null;
-  image_storage_path: string | null;
-  image_public_url: string | null;
-  image_format: ImageFormat | null;
-  image_model: ImageModel | null;
-  image_prompt: string | null;
   source_url: string | null;
   source_summary: string | null;
   source_type: SourceType;
@@ -94,27 +56,4 @@ export interface ContentItem {
   published_to: string[];
   scheduled_at: string | null;
   publish_language: Language | null;
-}
-
-export interface ReferenceImage {
-  id: string;
-  account_id: string;
-  storage_path: string;
-  public_url: string;
-  description: string | null;
-  uploaded_via: "web" | "slack";
-  created_at: string;
-}
-
-export interface ImageGeneration {
-  id: string;
-  content_item_id: string | null;
-  account_id: string;
-  prompt: string;
-  format: ImageFormat;
-  model: ImageModel | null;
-  storage_path: string;
-  public_url: string;
-  is_current: boolean;
-  created_at: string;
 }

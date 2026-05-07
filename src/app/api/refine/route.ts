@@ -9,57 +9,40 @@ export async function POST(req: NextRequest) {
     const { post_id, instruction } = await req.json();
     const supabase = getSupabase();
 
-    const { data: post, error } = await supabase
-      .from("posts")
+    const { data: item, error } = await supabase
+      .from("content_items")
       .select("*")
       .eq("id", post_id)
       .single();
 
-    if (error || !post) {
-      return NextResponse.json({ error: "Post not found" }, { status: 404 });
+    if (error || !item) {
+      return NextResponse.json({ error: "Content not found" }, { status: 404 });
     }
 
-    const responseText = await generateText(
-      `You rewrite LinkedIn posts based on user instructions. Keep the same general topic but adjust based on the instruction. Do NOT mention or promote Aloud unless the user explicitly asks for it.`,
-      `Here are the current versions of a LinkedIn post:
+    const langName = item.copy_language === "en" ? "English" : "Spanish";
 
-ENGLISH:
-${post.content_en || "N/A"}
+    const rewritten = await generateText(
+      `You rewrite social media posts based on user instructions. Keep the same general topic but adjust based on the instruction. Do NOT mention or promote Aloud unless the user explicitly asks for it. Respond ONLY with the rewritten post text — no JSON, no labels, no quotes.`,
+      `Current post (${langName}, platform: ${item.platform}):
 
-SPANISH:
-${post.content_es || "N/A"}
+${item.copy_text || ""}
 
 INSTRUCTION: ${instruction}
 
-Rewrite both versions following the instruction. Format as JSON:
-{"content_en": "...", "content_es": "..."}`
+Rewrite the post in ${langName} following the instruction.`
     );
 
-    const jsonMatch = responseText.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      return NextResponse.json(
-        { error: "Failed to parse AI response" },
-        { status: 500 }
-      );
-    }
-
-    const generated = JSON.parse(jsonMatch[0]);
+    const newCopy = rewritten.trim() || item.copy_text;
 
     const { data: updated, error: updateError } = await supabase
-      .from("posts")
-      .update({
-        content_en: generated.content_en || post.content_en,
-        content_es: generated.content_es || post.content_es,
-      })
+      .from("content_items")
+      .update({ copy_text: newCopy })
       .eq("id", post_id)
       .select()
       .single();
 
     if (updateError) {
-      return NextResponse.json(
-        { error: updateError.message },
-        { status: 500 }
-      );
+      return NextResponse.json({ error: updateError.message }, { status: 500 });
     }
 
     return NextResponse.json(updated);
@@ -67,8 +50,7 @@ Rewrite both versions following the instruction. Format as JSON:
     console.error("Refine error:", error);
     return NextResponse.json(
       {
-        error:
-          error instanceof Error ? error.message : "Internal server error",
+        error: error instanceof Error ? error.message : "Internal server error",
       },
       { status: 500 }
     );

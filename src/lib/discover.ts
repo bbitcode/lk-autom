@@ -53,7 +53,7 @@ export async function getCachedArticles(): Promise<Article[] | null> {
   const { data } = await supabase
     .from("discover_cache")
     .select("*")
-    .in("source_type", ["rss", "scrape"])
+    .eq("source_type", "rss")
     .gte("cached_at", cutoff)
     .gte("relevance_score", 7)
     .order("relevance_score", { ascending: false });

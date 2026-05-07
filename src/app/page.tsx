@@ -1,130 +1,142 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { Post, TeamMember, PostStatus, Language, Account } from "@/lib/types";
+import { ContentItem, TeamMember, PostStatus, Language, Account } from "@/lib/types";
 import { PostCard } from "@/components/PostCard";
 import { DiscoverPanel } from "@/components/DiscoverPanel";
 import { SettingsPanel } from "@/components/SettingsPanel";
 import { ContentTab } from "@/components/ContentTab";
-import { ImageGallery } from "@/components/ImageGallery";
-import { AccountSwitcher } from "@/components/AccountSwitcher";
 
 const TEAM: TeamMember[] = ["Daniel", "Natalia", "Tomás", "Isa", "Jorge"];
 
-type Tab = "content" | "posts" | "gallery" | "generate" | "discover" | "settings";
+type Tab = "content" | "posts" | "discover" | "settings";
 
 export default function Home() {
-  const [currentUser, setCurrentUser] = useState<TeamMember | null>(null);
-  const [posts, setPosts] = useState<Post[]>([]);
+  const [authState, setAuthState] = useState<"checking" | "out" | "in">("checking");
+  const [passwordInput, setPasswordInput] = useState("");
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [authSubmitting, setAuthSubmitting] = useState(false);
+
+  const [posts, setPosts] = useState<ContentItem[]>([]);
   const [loading, setLoading] = useState(false);
-  const [generating, setGenerating] = useState(false);
-  const [selectedAccount, setSelectedAccount] = useState<Account | null>(null);
+  const [account, setAccount] = useState<Account | null>(null);
 
   // Filters
   const [filterLang, setFilterLang] = useState<Language | "all">("all");
   const [filterStatus, setFilterStatus] = useState<PostStatus | "all">("all");
   const [filterUsedBy, setFilterUsedBy] = useState<string>("all");
 
-  // Generate form
-  const [genType, setGenType] = useState<"url" | "idea">("url");
-  const [genInput, setGenInput] = useState("");
-  const [genMember, setGenMember] = useState<TeamMember>("Daniel");
-  const [genFocus, setGenFocus] = useState("");
-  const [genUseAI, setGenUseAI] = useState(true);
-  const [genManualLanguage, setGenManualLanguage] = useState<Language>("es");
+  // URL handed off from Discover → Content
+  const [discoverUrl, setDiscoverUrl] = useState<string | undefined>(undefined);
 
-  // Tabs
   const [tab, setTab] = useState<Tab>("content");
+
+  // Check auth on mount
+  useEffect(() => {
+    fetch("/api/auth")
+      .then((r) => r.json())
+      .then((d) => setAuthState(d.authed ? "in" : "out"))
+      .catch(() => setAuthState("out"));
+  }, []);
+
+  // Once authed, load the (single) Aloud account
+  useEffect(() => {
+    if (authState !== "in") return;
+    fetch("/api/accounts")
+      .then((r) => r.json())
+      .then((data) => {
+        const list: Account[] = Array.isArray(data) ? data : [];
+        const def = list.find((a) => a.is_default) || list[0] || null;
+        setAccount(def);
+      });
+  }, [authState]);
 
   const fetchPosts = useCallback(async () => {
     setLoading(true);
     const params = new URLSearchParams();
-    if (filterLang !== "all") params.set("language", filterLang);
     if (filterStatus !== "all") params.set("status", filterStatus);
-    if (filterUsedBy !== "all") params.set("used_by", filterUsedBy);
-
-    const res = await fetch(`/api/posts?${params}`);
+    const res = await fetch(`/api/content?${params}`);
     const data = await res.json();
-    setPosts(Array.isArray(data) ? data : []);
+    let items: ContentItem[] = Array.isArray(data) ? data : [];
+    // Client-side filters that the /api/content endpoint doesn't support directly.
+    if (filterLang !== "all") items = items.filter((i) => i.copy_language === filterLang);
+    if (filterUsedBy !== "all") items = items.filter((i) => i.used_by === filterUsedBy);
+    setPosts(items);
     setLoading(false);
   }, [filterLang, filterStatus, filterUsedBy]);
 
   useEffect(() => {
-    if (currentUser) fetchPosts();
-  }, [currentUser, filterLang, filterStatus, filterUsedBy, fetchPosts]);
+    if (authState === "in") fetchPosts();
+  }, [authState, filterLang, filterStatus, filterUsedBy, fetchPosts]);
 
-  const handleGenerate = async () => {
-    if (!genInput.trim()) return;
-    const isManual = !genUseAI && genType === "idea";
-    setGenerating(true);
-    try {
-      const res = await fetch("/api/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          type: genType,
-          [genType === "url" ? "url" : "idea"]: genInput,
-          member_name: genMember,
-          focus: genType === "url" ? genFocus : undefined,
-          source_type: isManual ? "manual" : "ai_generated",
-          language: isManual ? genManualLanguage : undefined,
-        }),
-      });
-      const data = await res.json();
-      if (data.error) {
-        alert("Error: " + data.error);
-      } else {
-        setGenInput("");
-        setTab("posts");
-        fetchPosts();
-      }
-    } catch {
-      alert("Error generating post");
+  const submitPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthSubmitting(true);
+    setAuthError(null);
+    const res = await fetch("/api/auth", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password: passwordInput }),
+    });
+    setAuthSubmitting(false);
+    if (res.ok) {
+      setAuthState("in");
+      setPasswordInput("");
+    } else {
+      const data = await res.json().catch(() => ({}));
+      setAuthError(data.error || "Wrong password");
     }
-    setGenerating(false);
   };
 
-  const updatePost = async (id: string, updates: Partial<Post>) => {
-    await fetch("/api/posts", {
+  const logout = async () => {
+    await fetch("/api/auth", { method: "DELETE" });
+    setAuthState("out");
+  };
+
+  const updatePost = async (id: string, updates: Partial<ContentItem>) => {
+    await fetch(`/api/content/${id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id, ...updates }),
+      body: JSON.stringify(updates),
     });
     fetchPosts();
   };
 
   const deletePost = async (id: string) => {
     if (!confirm("Delete this post?")) return;
-    await fetch("/api/posts", {
-      method: "DELETE",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id }),
-    });
+    await fetch(`/api/content/${id}`, { method: "DELETE" });
     fetchPosts();
   };
 
-  // User selector
-  if (!currentUser) {
+  if (authState === "checking") {
+    return <div className="min-h-screen flex items-center justify-center text-sm text-zinc-400">Loading…</div>;
+  }
+
+  if (authState === "out") {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <div className="text-center">
-          <h1 className="text-2xl font-bold mb-6">Aloud Content Lab</h1>
-          <p className="text-zinc-500 mb-8">Who are you?</p>
-          <div className="flex flex-col gap-3">
-            {TEAM.map((name) => (
-              <button
-                key={name}
-                onClick={() => {
-                  setCurrentUser(name);
-                  setGenMember(name);
-                }}
-                className="px-8 py-3 bg-zinc-900 text-white rounded-lg hover:bg-zinc-700 transition-colors text-lg"
-              >
-                {name}
-              </button>
-            ))}
-          </div>
-        </div>
+        <form onSubmit={submitPassword} className="w-full max-w-sm text-center">
+          <h1 className="text-2xl font-bold mb-2">Aloud Content Lab</h1>
+          <p className="text-zinc-500 mb-8">Enter the team password to continue.</p>
+          <input
+            type="password"
+            autoFocus
+            value={passwordInput}
+            onChange={(e) => setPasswordInput(e.target.value)}
+            placeholder="Password"
+            className="w-full px-4 py-3 border border-zinc-200 rounded-lg text-sm mb-3"
+          />
+          {authError && (
+            <p className="text-xs text-red-500 mb-3">{authError}</p>
+          )}
+          <button
+            type="submit"
+            disabled={authSubmitting || !passwordInput}
+            className="w-full px-8 py-3 bg-zinc-900 text-white rounded-lg hover:bg-zinc-700 disabled:opacity-50"
+          >
+            {authSubmitting ? "Checking..." : "Enter"}
+          </button>
+        </form>
       </div>
     );
   }
@@ -132,8 +144,6 @@ export default function Home() {
   const TABS: { key: Tab; label: string }[] = [
     { key: "content", label: "Content" },
     { key: "posts", label: "Posts" },
-    { key: "gallery", label: "Gallery" },
-    { key: "generate", label: "Generate" },
     { key: "discover", label: "Discover" },
     { key: "settings", label: "Settings" },
   ];
@@ -142,22 +152,13 @@ export default function Home() {
     <div className="min-h-screen max-w-5xl mx-auto px-4 py-8">
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-xl font-bold">Aloud Content Lab</h1>
-          <p className="text-sm text-zinc-500">Logged in as {currentUser}</p>
-        </div>
-        <div className="flex items-center gap-4">
-          <AccountSwitcher
-            selected={selectedAccount}
-            onSelect={setSelectedAccount}
-          />
-          <button
-            onClick={() => setCurrentUser(null)}
-            className="text-sm text-zinc-400 hover:text-zinc-600"
-          >
-            Switch user
-          </button>
-        </div>
+        <h1 className="text-xl font-bold">Aloud Content Lab</h1>
+        <button
+          onClick={logout}
+          className="text-sm text-zinc-400 hover:text-zinc-600"
+        >
+          Logout
+        </button>
       </div>
 
       {/* Tabs */}
@@ -177,11 +178,14 @@ export default function Home() {
         ))}
       </div>
 
-      {/* Content tab (NEW) */}
-      {tab === "content" && <ContentTab account={selectedAccount} />}
-
-      {/* Gallery tab (NEW) */}
-      {tab === "gallery" && <ImageGallery account={selectedAccount} />}
+      {/* Content tab (single creation surface) */}
+      {tab === "content" && (
+        <ContentTab
+          account={account}
+          initialUrl={discoverUrl}
+          onConsumeInitialUrl={() => setDiscoverUrl(undefined)}
+        />
+      )}
 
       {/* Posts tab */}
       {tab === "posts" && (
@@ -221,7 +225,7 @@ export default function Home() {
           {loading ? (
             <p className="text-zinc-400 text-sm">Loading...</p>
           ) : posts.length === 0 ? (
-            <p className="text-zinc-400 text-sm">No posts yet. Go to Generate to create some.</p>
+            <p className="text-zinc-400 text-sm">No posts yet. Use the Content tab to create some.</p>
           ) : (
             <div className="space-y-4">
               {posts.map((post) => (
@@ -232,121 +236,12 @@ export default function Home() {
         </div>
       )}
 
-      {/* Generate tab (legacy LinkedIn) */}
-      {tab === "generate" && (
-        <div className="max-w-xl">
-          <div className="flex gap-3 mb-4">
-            <button
-              onClick={() => setGenType("url")}
-              className={`px-4 py-2 text-sm rounded-md ${
-                genType === "url" ? "bg-zinc-900 text-white" : "bg-zinc-100 text-zinc-600"
-              }`}
-            >
-              From URL
-            </button>
-            <button
-              onClick={() => setGenType("idea")}
-              className={`px-4 py-2 text-sm rounded-md ${
-                genType === "idea" ? "bg-zinc-900 text-white" : "bg-zinc-100 text-zinc-600"
-              }`}
-            >
-              From idea
-            </button>
-          </div>
-
-          <div className="space-y-4">
-            {genType === "url" ? (
-              <div className="space-y-3">
-                <input
-                  type="url"
-                  placeholder="Paste a URL to generate a post from..."
-                  value={genInput}
-                  onChange={(e) => setGenInput(e.target.value)}
-                  className="w-full px-4 py-3 border border-zinc-200 rounded-lg text-sm"
-                />
-                <textarea
-                  placeholder="Additional focus or angle (optional)..."
-                  value={genFocus}
-                  onChange={(e) => setGenFocus(e.target.value)}
-                  rows={2}
-                  className="w-full px-4 py-3 border border-zinc-200 rounded-lg text-sm resize-none"
-                />
-              </div>
-            ) : (
-              <textarea
-                placeholder="Describe your post idea..."
-                value={genInput}
-                onChange={(e) => setGenInput(e.target.value)}
-                rows={4}
-                className="w-full px-4 py-3 border border-zinc-200 rounded-lg text-sm resize-none"
-              />
-            )}
-
-            {genType === "idea" && (
-              <div className="flex items-center gap-2">
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={genUseAI}
-                    onChange={(e) => setGenUseAI(e.target.checked)}
-                    className="rounded"
-                  />
-                  <span className="text-sm text-zinc-600">Mejorar con IA</span>
-                </label>
-                <span className="text-xs text-zinc-400">
-                  {genUseAI ? "(Gemini reescribe la idea)" : "(se guarda tal cual)"}
-                </span>
-              </div>
-            )}
-
-            <div className="flex items-center gap-6">
-              {genUseAI && (
-                <div className="flex items-center gap-2">
-                  <label className="text-sm text-zinc-500">Tone of:</label>
-                  <select
-                    value={genMember}
-                    onChange={(e) => setGenMember(e.target.value as TeamMember)}
-                    className="px-3 py-1.5 border border-zinc-200 rounded-md text-sm bg-white"
-                  >
-                    {TEAM.map((name) => (
-                      <option key={name} value={name}>{name}</option>
-                    ))}
-                  </select>
-                </div>
-              )}
-              {!genUseAI && genType === "idea" && (
-                <div className="flex items-center gap-2">
-                  <label className="text-sm text-zinc-500">Language:</label>
-                  <select
-                    value={genManualLanguage}
-                    onChange={(e) => setGenManualLanguage(e.target.value as Language)}
-                    className="px-3 py-1.5 border border-zinc-200 rounded-md text-sm bg-white"
-                  >
-                    <option value="es">Spanish</option>
-                    <option value="en">English</option>
-                  </select>
-                </div>
-              )}
-            </div>
-
-            <button
-              onClick={handleGenerate}
-              disabled={generating || !genInput.trim()}
-              className="px-6 py-3 bg-zinc-900 text-white rounded-lg hover:bg-zinc-700 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium"
-            >
-              {generating ? "Generating..." : (genUseAI || genType === "url") ? "Generate Post" : "Save Post"}
-            </button>
-          </div>
-        </div>
-      )}
-
       {/* Discover tab */}
       {tab === "discover" && (
         <DiscoverPanel
           onGenerate={(url: string) => {
-            setGenInput(url);
-            setGenType("url");
-            setTab("generate");
+            setDiscoverUrl(url);
+            setTab("content");
           }}
         />
       )}

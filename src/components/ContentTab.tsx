@@ -5,8 +5,6 @@ import {
   Account,
   ContentItem,
   Platform,
-  ContentType,
-  ImageFormat,
   Language,
 } from "@/lib/types";
 
@@ -16,20 +14,38 @@ interface MemberOption {
   language: string;
 }
 
-const FORMATS: { value: ImageFormat; label: string; icon: string }[] = [
-  { value: "1:1", label: "Square", icon: "1:1" },
-  { value: "4:5", label: "Vertical", icon: "4:5" },
-  { value: "9:16", label: "Story", icon: "9:16" },
-  { value: "16:9", label: "Landscape", icon: "16:9" },
-];
+type InputMode = "idea" | "url";
 
-export function ContentTab({ account }: { account: Account | null }) {
+export function ContentTab({
+  account,
+  initialUrl,
+  onConsumeInitialUrl,
+}: {
+  account: Account | null;
+  initialUrl?: string;
+  onConsumeInitialUrl?: () => void;
+}) {
   const [platform, setPlatform] = useState<Platform>("instagram");
-  const [contentType, setContentType] = useState<ContentType>("copy_and_image");
+  const [inputMode, setInputMode] = useState<InputMode>("idea");
   const [copyInput, setCopyInput] = useState("");
+  const [urlInput, setUrlInput] = useState("");
+  const [focusInput, setFocusInput] = useState("");
   const [copyLanguage, setCopyLanguage] = useState<Language>("es");
   const [memberName, setMemberName] = useState("");
   const [accountMembersList, setAccountMembersList] = useState<MemberOption[]>([]);
+  const [useAICopy, setUseAICopy] = useState(true);
+  const [generating, setGenerating] = useState(false);
+  const [result, setResult] = useState<ContentItem | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  // Pre-fill URL when DiscoverPanel routes here with an article.
+  useEffect(() => {
+    if (initialUrl) {
+      setInputMode("url");
+      setUrlInput(initialUrl);
+      onConsumeInitialUrl?.();
+    }
+  }, [initialUrl]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!account) return;
@@ -41,33 +57,19 @@ export function ContentTab({ account }: { account: Account | null }) {
         if (list.length > 0 && !memberName) setMemberName(list[0].name);
       });
   }, [account]); // eslint-disable-line react-hooks/exhaustive-deps
-  const [imagePrompt, setImagePrompt] = useState("");
-  const [imageFormat, setImageFormat] = useState<ImageFormat>("1:1");
-  const imageModel = "nano-banana";
-  const [useBrandStyle, setUseBrandStyle] = useState(true);
-  const [useAICopy, setUseAICopy] = useState(true);
-  const [referenceFile, setReferenceFile] = useState<File | null>(null);
-  const [referencePreview, setReferencePreview] = useState<string | null>(null);
-  const [generating, setGenerating] = useState(false);
-  const [result, setResult] = useState<ContentItem | null>(null);
-  const [error, setError] = useState<string | null>(null);
 
   const handleGenerate = async () => {
     if (!account) return;
-    if (contentType !== "image_only" && !copyInput.trim()) return;
-    if (contentType !== "copy_only" && !imagePrompt.trim() && !copyInput.trim()) return;
+    if (inputMode === "idea" && !copyInput.trim()) return;
+    if (inputMode === "url" && !urlInput.trim()) return;
 
     setGenerating(true);
     setError(null);
     setResult(null);
 
     try {
-      // Convert reference image to base64 if present
-      let referenceImageBase64: string | undefined;
-      if (referenceFile) {
-        const buffer = await referenceFile.arrayBuffer();
-        referenceImageBase64 = Buffer.from(buffer).toString("base64");
-      }
+      // URL mode always uses AI; manual toggle is irrelevant there.
+      const effectiveSourceType = inputMode === "url" ? "ai_generated" : useAICopy ? "ai_generated" : "manual";
 
       const res = await fetch("/api/content/generate", {
         method: "POST",
@@ -75,16 +77,12 @@ export function ContentTab({ account }: { account: Account | null }) {
         body: JSON.stringify({
           account_id: account.id,
           platform,
-          content_type: contentType,
-          copy_input: copyInput || undefined,
+          copy_input: inputMode === "idea" ? copyInput || undefined : undefined,
+          url: inputMode === "url" ? urlInput || undefined : undefined,
+          focus: inputMode === "url" ? focusInput || undefined : undefined,
           copy_language: copyLanguage,
           member_name: memberName,
-          image_prompt: imagePrompt || undefined,
-          image_format: imageFormat,
-          image_model: imageModel,
-          use_brand_style: useBrandStyle,
-          reference_image_base64: referenceImageBase64,
-          source_type: useAICopy ? "ai_generated" : "manual",
+          source_type: effectiveSourceType,
         }),
       });
       const data = await res.json();
@@ -95,28 +93,6 @@ export function ContentTab({ account }: { account: Account | null }) {
       }
     } catch {
       setError("Failed to generate content");
-    }
-    setGenerating(false);
-  };
-
-  const handleRegenImage = async () => {
-    if (!result) return;
-    setGenerating(true);
-    try {
-      const res = await fetch("/api/content/regenerate-image", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          content_item_id: result.id,
-          prompt: imagePrompt || undefined,
-          image_format: imageFormat,
-          image_model: imageModel,
-        }),
-      });
-      const data = await res.json();
-      if (!data.error) setResult(data);
-    } catch {
-      /* ignore */
     }
     setGenerating(false);
   };
@@ -134,12 +110,7 @@ export function ContentTab({ account }: { account: Account | null }) {
           {(["linkedin", "instagram", "twitter"] as Platform[]).map((p) => (
             <button
               key={p}
-              onClick={() => {
-                setPlatform(p);
-                if (p === "instagram") setImageFormat("1:1");
-                else if (p === "twitter") setImageFormat("16:9");
-                else setImageFormat("16:9");
-              }}
+              onClick={() => setPlatform(p)}
               className={`px-4 py-2 text-sm rounded-md capitalize ${
                 platform === p ? "bg-zinc-900 text-white" : "bg-zinc-100 text-zinc-600"
               }`}
@@ -150,168 +121,97 @@ export function ContentTab({ account }: { account: Account | null }) {
         </div>
       </div>
 
-      {/* Content type selector */}
-      <div>
-        <label className="text-xs text-zinc-400 mb-2 block">What to generate</label>
+      {/* Copy input */}
+      <div className="space-y-3">
+        {/* Input mode switcher */}
         <div className="flex gap-2">
-          {(
-            [
-              { value: "copy_and_image", label: "Copy + Image" },
-              { value: "copy_only", label: "Copy only" },
-              { value: "image_only", label: "Image only" },
-            ] as { value: ContentType; label: string }[]
-          ).map((ct) => (
+          {(["idea", "url"] as InputMode[]).map((m) => (
             <button
-              key={ct.value}
-              onClick={() => setContentType(ct.value)}
-              className={`px-4 py-2 text-sm rounded-md ${
-                contentType === ct.value
-                  ? "bg-zinc-900 text-white"
-                  : "bg-zinc-100 text-zinc-600"
+              key={m}
+              onClick={() => setInputMode(m)}
+              className={`px-3 py-1.5 text-xs rounded-md ${
+                inputMode === m ? "bg-zinc-900 text-white" : "bg-zinc-100 text-zinc-600"
               }`}
             >
-              {ct.label}
+              {m === "idea" ? "From idea" : "From URL"}
             </button>
           ))}
         </div>
-      </div>
 
-      {/* Copy input */}
-      {contentType !== "image_only" && (
-        <div className="space-y-3">
-          <div className="flex items-center justify-between">
-            <label className="text-xs text-zinc-400 block">
-              {useAICopy ? "Idea or topic for the copy" : "Final copy (saved as-is)"}
-            </label>
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={useAICopy}
-                onChange={(e) => setUseAICopy(e.target.checked)}
-                className="rounded"
-              />
-              <span className="text-xs text-zinc-500">Mejorar con IA</span>
-            </label>
+        {inputMode === "idea" ? (
+          <>
+            <div className="flex items-center justify-between">
+              <label className="text-xs text-zinc-400 block">
+                {useAICopy ? "Idea or topic for the copy" : "Final copy (saved as-is)"}
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={useAICopy}
+                  onChange={(e) => setUseAICopy(e.target.checked)}
+                  className="rounded"
+                />
+                <span className="text-xs text-zinc-500">Mejorar con IA</span>
+              </label>
+            </div>
+            <textarea
+              placeholder={useAICopy ? "Describe what the post should be about..." : "Paste the final copy you want to save..."}
+              value={copyInput}
+              onChange={(e) => setCopyInput(e.target.value)}
+              rows={useAICopy ? 3 : 6}
+              className="w-full px-4 py-3 border border-zinc-200 rounded-lg text-sm resize-none"
+            />
+          </>
+        ) : (
+          <>
+            <label className="text-xs text-zinc-400 block">Article URL</label>
+            <input
+              type="url"
+              placeholder="https://..."
+              value={urlInput}
+              onChange={(e) => setUrlInput(e.target.value)}
+              className="w-full px-4 py-3 border border-zinc-200 rounded-lg text-sm"
+            />
+            <label className="text-xs text-zinc-400 block">Focus / angle (optional)</label>
+            <textarea
+              placeholder="What angle or take should the post have on this article?"
+              value={focusInput}
+              onChange={(e) => setFocusInput(e.target.value)}
+              rows={2}
+              className="w-full px-4 py-3 border border-zinc-200 rounded-lg text-sm resize-none"
+            />
+          </>
+        )}
+
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2">
+            <label className="text-xs text-zinc-400">Language:</label>
+            <select
+              value={copyLanguage}
+              onChange={(e) => setCopyLanguage(e.target.value as Language)}
+              className="px-2 py-1 border border-zinc-200 rounded text-xs bg-white"
+            >
+              <option value="es">Spanish</option>
+              <option value="en">English</option>
+            </select>
           </div>
-          <textarea
-            placeholder={useAICopy ? "Describe what the post should be about..." : "Paste the final copy you want to save..."}
-            value={copyInput}
-            onChange={(e) => setCopyInput(e.target.value)}
-            rows={useAICopy ? 3 : 6}
-            className="w-full px-4 py-3 border border-zinc-200 rounded-lg text-sm resize-none"
-          />
-          <div className="flex items-center gap-4">
+          {(inputMode === "url" || useAICopy) && (
             <div className="flex items-center gap-2">
-              <label className="text-xs text-zinc-400">Language:</label>
+              <label className="text-xs text-zinc-400">Tone of:</label>
               <select
-                value={copyLanguage}
-                onChange={(e) => setCopyLanguage(e.target.value as Language)}
+                value={memberName}
+                onChange={(e) => setMemberName(e.target.value)}
                 className="px-2 py-1 border border-zinc-200 rounded text-xs bg-white"
               >
-                <option value="es">Spanish</option>
-                <option value="en">English</option>
+                {accountMembersList.length === 0 && <option value="">No members assigned</option>}
+                {accountMembersList.map((m) => (
+                  <option key={m.id} value={m.name}>{m.name}</option>
+                ))}
               </select>
             </div>
-            {useAICopy && (
-              <div className="flex items-center gap-2">
-                <label className="text-xs text-zinc-400">Tone of:</label>
-                <select
-                  value={memberName}
-                  onChange={(e) => setMemberName(e.target.value)}
-                  className="px-2 py-1 border border-zinc-200 rounded text-xs bg-white"
-                >
-                  {accountMembersList.length === 0 && <option value="">No members assigned</option>}
-                  {accountMembersList.map((m) => (
-                    <option key={m.id} value={m.name}>{m.name}</option>
-                  ))}
-                </select>
-              </div>
-            )}
-          </div>
+          )}
         </div>
-      )}
-
-      {/* Image options */}
-      {contentType !== "copy_only" && (
-        <div className="space-y-3">
-          <label className="text-xs text-zinc-400 block">Image prompt</label>
-          <textarea
-            placeholder="Describe the image you want to generate..."
-            value={imagePrompt}
-            onChange={(e) => setImagePrompt(e.target.value)}
-            rows={2}
-            className="w-full px-4 py-3 border border-zinc-200 rounded-lg text-sm resize-none"
-          />
-
-          <div className="flex flex-wrap items-center gap-4">
-            {/* Format */}
-            <div>
-              <label className="text-xs text-zinc-400 mb-1 block">Format</label>
-              <div className="flex gap-1">
-                {FORMATS.map((f) => (
-                  <button
-                    key={f.value}
-                    onClick={() => setImageFormat(f.value)}
-                    className={`px-3 py-1.5 text-xs rounded-md ${
-                      imageFormat === f.value
-                        ? "bg-zinc-900 text-white"
-                        : "bg-zinc-100 text-zinc-600"
-                    }`}
-                  >
-                    {f.icon}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Brand style toggle */}
-            <label className="flex items-center gap-2 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={useBrandStyle}
-                onChange={(e) => setUseBrandStyle(e.target.checked)}
-                className="rounded"
-              />
-              <span className="text-xs text-zinc-500">Use brand style</span>
-            </label>
-          </div>
-
-          {/* Reference image (one-time, not saved) */}
-          <div>
-            <label className="text-xs text-zinc-400 mb-1 block">
-              Reference image (optional, one-time — won&apos;t be saved as permanent reference)
-            </label>
-            <div className="flex items-center gap-3">
-              <input
-                type="file"
-                accept="image/*"
-                onChange={(e) => {
-                  const f = e.target.files?.[0] || null;
-                  setReferenceFile(f);
-                  if (f) {
-                    const url = URL.createObjectURL(f);
-                    setReferencePreview(url);
-                  } else {
-                    setReferencePreview(null);
-                  }
-                }}
-                className="text-xs"
-              />
-              {referencePreview && (
-                <div className="relative">
-                  <img src={referencePreview} alt="Reference" className="w-16 h-16 object-cover rounded border border-zinc-200" />
-                  <button
-                    onClick={() => { setReferenceFile(null); setReferencePreview(null); }}
-                    className="absolute -top-1 -right-1 bg-red-500 text-white text-xs w-4 h-4 rounded-full leading-none"
-                  >
-                    x
-                  </button>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+      </div>
 
       {/* Generate button */}
       <button
@@ -337,59 +237,24 @@ export function ContentTab({ account }: { account: Account | null }) {
               Generated
             </span>
             <span className="text-xs text-zinc-400 capitalize">{result.platform}</span>
-            <span className="text-xs text-zinc-400">{result.content_type}</span>
           </div>
 
-          <div className="flex gap-4">
-            {/* Copy preview */}
-            {result.copy_text && (
-              <div className="flex-1 min-w-0">
-                <label className="text-xs text-zinc-400 mb-1 block">Copy</label>
-                <p className="text-sm whitespace-pre-wrap leading-relaxed bg-zinc-50 p-3 rounded-lg">
-                  {result.copy_text}
-                </p>
-                <div className="flex gap-2 mt-2">
-                  <button
-                    onClick={() => navigator.clipboard.writeText(result.copy_text!)}
-                    className="text-xs text-zinc-400 hover:text-zinc-600"
-                  >
-                    Copy text
-                  </button>
-                </div>
+          {result.copy_text && (
+            <div>
+              <label className="text-xs text-zinc-400 mb-1 block">Copy</label>
+              <p className="text-sm whitespace-pre-wrap leading-relaxed bg-zinc-50 p-3 rounded-lg">
+                {result.copy_text}
+              </p>
+              <div className="flex gap-2 mt-2">
+                <button
+                  onClick={() => navigator.clipboard.writeText(result.copy_text!)}
+                  className="text-xs text-zinc-400 hover:text-zinc-600"
+                >
+                  Copy text
+                </button>
               </div>
-            )}
-
-            {/* Image preview */}
-            {result.image_public_url && (
-              <div className={result.copy_text ? "w-64 shrink-0" : "flex-1"}>
-                <label className="text-xs text-zinc-400 mb-1 block">
-                  Image ({result.image_format})
-                </label>
-                <img
-                  src={result.image_public_url}
-                  alt="Generated"
-                  className="w-full rounded-lg border border-zinc-200"
-                />
-                <div className="flex gap-2 mt-2">
-                  <a
-                    href={result.image_public_url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-xs text-zinc-400 hover:text-zinc-600"
-                  >
-                    Download
-                  </a>
-                  <button
-                    onClick={handleRegenImage}
-                    disabled={generating}
-                    className="text-xs text-zinc-400 hover:text-zinc-600"
-                  >
-                    Regenerate
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
+            </div>
+          )}
         </div>
       )}
     </div>

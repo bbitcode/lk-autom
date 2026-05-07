@@ -1,5 +1,4 @@
 import { getSupabase } from "@/lib/supabase";
-import { deleteFile } from "@/lib/storage";
 import { NextRequest, NextResponse } from "next/server";
 
 export async function GET(
@@ -43,18 +42,6 @@ export async function DELETE(
 ) {
   const { id } = await params;
   const supabase = getSupabase();
-
-  // Get the content item to clean up storage
-  const { data: item } = await supabase
-    .from("content_items")
-    .select("image_storage_path")
-    .eq("id", id)
-    .single();
-
-  if (item?.image_storage_path) {
-    await deleteFile(item.image_storage_path).catch(() => {});
-  }
-
   const { error } = await supabase.from("content_items").delete().eq("id", id);
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json({ success: true });

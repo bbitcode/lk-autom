@@ -23,15 +23,12 @@ export async function PATCH(
 ) {
   const { id } = await params;
   const body = await req.json();
-  const { name, slug, color_palette, brand_style, fonts } = body;
+  const { name, slug } = body;
 
   const supabase = getSupabase();
   const updates: Record<string, unknown> = {};
   if (name !== undefined) updates.name = name;
   if (slug !== undefined) updates.slug = slug.toLowerCase().replace(/[^a-z0-9-]/g, "-");
-  if (color_palette !== undefined) updates.color_palette = color_palette;
-  if (brand_style !== undefined) updates.brand_style = brand_style;
-  if (fonts !== undefined) updates.fonts = fonts;
 
   const { data, error } = await supabase
     .from("accounts")

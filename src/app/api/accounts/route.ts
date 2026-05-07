@@ -15,7 +15,7 @@ export async function GET() {
 
 export async function POST(req: NextRequest) {
   const body = await req.json();
-  const { name, slug, color_palette, brand_style } = body;
+  const { name, slug } = body;
 
   if (!name || !slug) {
     return NextResponse.json({ error: "name and slug are required" }, { status: 400 });
@@ -27,8 +27,6 @@ export async function POST(req: NextRequest) {
     .insert({
       name,
       slug: slug.toLowerCase().replace(/[^a-z0-9-]/g, "-"),
-      color_palette: color_palette || [],
-      brand_style: brand_style || null,
     })
     .select()
     .single();

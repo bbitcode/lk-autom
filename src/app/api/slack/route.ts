@@ -58,19 +58,11 @@ export async function POST(request: NextRequest) {
   return NextResponse.json({ ok: true });
 }
 
-interface SlackFile {
-  url_private_download?: string;
-  url_private?: string;
-  name: string;
-  mimetype: string;
-}
-
 interface SlackEvent {
   text: string;
   channel: string;
   ts: string;
   thread_ts?: string;
-  files?: SlackFile[];
 }
 
 async function processAndReply(event: SlackEvent) {
@@ -81,33 +73,13 @@ async function processAndReply(event: SlackEvent) {
       timestamp: event.ts,
     }).catch(() => {});
 
-    // Extract file info for reference image uploads
-    const files = event.files
-      ?.filter((f) => f.mimetype?.startsWith("image/"))
-      .map((f) => ({
-        url: f.url_private_download || f.url_private || "",
-        name: f.name,
-      }))
-      .filter((f) => f.url) || [];
+    const result = await processSlackMessage(event.text, event.channel);
 
-    const result = await processSlackMessage(event.text, event.channel, files.length > 0 ? files : undefined);
-
-    // If there's an image buffer, upload it to Slack
-    if (result.imageBuffer) {
-      await slackClient.filesUploadV2({
-        channel_id: event.channel,
-        thread_ts: event.thread_ts || event.ts,
-        file: result.imageBuffer,
-        filename: "generated-image.png",
-        initial_comment: result.text,
-      });
-    } else {
-      await slackClient.chat.postMessage({
-        channel: event.channel,
-        text: result.text,
-        thread_ts: event.thread_ts || event.ts,
-      });
-    }
+    await slackClient.chat.postMessage({
+      channel: event.channel,
+      text: result.text,
+      thread_ts: event.thread_ts || event.ts,
+    });
 
     await slackClient.reactions.remove({
       channel: event.channel,

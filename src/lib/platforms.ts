@@ -51,3 +51,28 @@ Write the post in ${langName}.
 
 Return ONLY the post text, no JSON, no labels, no quotes. Just the raw post content ready to copy-paste.`;
 }
+
+export function buildPlatformFromUrlPrompt(
+  platform: Platform,
+  url: string,
+  scrapedContent: string,
+  language: "en" | "es",
+  focus?: string
+): string {
+  const config = PLATFORMS[platform];
+  const langName = language === "en" ? "English" : "Spanish";
+
+  return `Write a ${config.name} post that reacts to or builds on the article below.
+
+ARTICLE URL: ${url}
+ARTICLE CONTENT:
+${scrapedContent}
+
+${focus ? `FOCUS / ANGLE: ${focus}\n\n` : ""}PLATFORM RULES for ${config.name}:
+- Max characters: ${config.maxChars}
+- Style: ${config.style}
+
+Write the post in ${langName}. Reference the article naturally — do not summarize it line by line. Add a personal take or insight.
+
+Return ONLY the post text, no JSON, no labels, no quotes. Just the raw post content ready to copy-paste.`;
+}

@@ -17,13 +17,6 @@ interface ContextData {
   account_id?: string;
 }
 
-interface ReferenceImage {
-  id: string;
-  public_url: string;
-  description: string | null;
-  created_at: string;
-}
-
 export function SettingsPanel() {
   const [allMembers, setAllMembers] = useState<MemberData[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -31,15 +24,7 @@ export function SettingsPanel() {
 
   // Per-account state
   const [accountContexts, setAccountContexts] = useState<Record<string, ContextData[]>>({});
-  const [accountRefs, setAccountRefs] = useState<Record<string, ReferenceImage[]>>({});
   const [accountMembers, setAccountMembers] = useState<Record<string, MemberData[]>>({});
-  const [expandedAccount, setExpandedAccount] = useState<string | null>(null);
-
-  // New account form
-  const [newName, setNewName] = useState("");
-  const [newSlug, setNewSlug] = useState("");
-  const [newStyle, setNewStyle] = useState("");
-  const [newColors, setNewColors] = useState("");
 
   useEffect(() => {
     fetch("/api/settings")
@@ -50,7 +35,11 @@ export function SettingsPanel() {
       .then((data) => {
         const list = Array.isArray(data) ? data : [];
         setAccounts(list);
-        list.forEach((a: Account) => loadAccountContext(a.id));
+        // Single-account setup: load context + members for every account up front.
+        list.forEach((a: Account) => {
+          loadAccountContext(a.id);
+          loadAccountMembers(a.id);
+        });
       });
   }, []);
 
@@ -58,12 +47,6 @@ export function SettingsPanel() {
     const res = await fetch(`/api/settings?account_id=${accountId}`);
     const data = await res.json();
     setAccountContexts((prev) => ({ ...prev, [accountId]: data.context || [] }));
-  };
-
-  const loadAccountRefs = async (accountId: string) => {
-    const res = await fetch(`/api/accounts/${accountId}/references`);
-    const data = await res.json();
-    setAccountRefs((prev) => ({ ...prev, [accountId]: Array.isArray(data) ? data : [] }));
   };
 
   const loadAccountMembers = async (accountId: string) => {
@@ -130,95 +113,6 @@ export function SettingsPanel() {
     setSaving(false);
   };
 
-  const createAccount = async () => {
-    if (!newName.trim()) return;
-    setSaving(true);
-    const res = await fetch("/api/accounts", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        name: newName,
-        slug: newSlug || newName.toLowerCase().replace(/[^a-z0-9]/g, "-"),
-        brand_style: newStyle || null,
-        color_palette: newColors ? newColors.split(",").map((c) => c.trim()) : [],
-      }),
-    });
-    const data = await res.json();
-    if (!data.error) {
-      setAccounts([...accounts, data]);
-      setNewName("");
-      setNewSlug("");
-      setNewStyle("");
-      setNewColors("");
-    }
-    setSaving(false);
-  };
-
-  const updateAccount = async (id: string, updates: Partial<Account>) => {
-    await fetch(`/api/accounts/${id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(updates),
-    });
-  };
-
-  const deleteAccount = async (id: string) => {
-    if (!confirm("Delete this account?")) return;
-    await fetch(`/api/accounts/${id}`, { method: "DELETE" });
-    setAccounts(accounts.filter((a) => a.id !== id));
-  };
-
-  // Per-account logos
-  const [accountLogos, setAccountLogos] = useState<Record<string, ReferenceImage[]>>({});
-
-  const loadAccountLogos = async (accountId: string) => {
-    const res = await fetch(`/api/accounts/${accountId}/references?type=logo`);
-    const data = await res.json();
-    setAccountLogos((prev) => ({ ...prev, [accountId]: Array.isArray(data) ? data : [] }));
-  };
-
-  const uploadLogo = async (accountId: string, file: File) => {
-    const logos = accountLogos[accountId] || [];
-    if (logos.length >= 6) return;
-    const formData = new FormData();
-    formData.append("file", file);
-    formData.append("type", "logo");
-    await fetch(`/api/accounts/${accountId}/references`, {
-      method: "POST",
-      body: formData,
-    });
-    loadAccountLogos(accountId);
-  };
-
-  const deleteLogo = async (accountId: string, refId: string) => {
-    await fetch(`/api/accounts/${accountId}/references`, {
-      method: "DELETE",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ reference_id: refId }),
-    });
-    loadAccountLogos(accountId);
-  };
-
-  const uploadReference = async (accountId: string, file: File, description: string) => {
-    const formData = new FormData();
-    formData.append("file", file);
-    if (description) formData.append("description", description);
-    await fetch(`/api/accounts/${accountId}/references`, {
-      method: "POST",
-      body: formData,
-    });
-    loadAccountRefs(accountId);
-  };
-
-  const deleteReference = async (accountId: string, refId: string) => {
-    await fetch(`/api/accounts/${accountId}/references`, {
-      method: "DELETE",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ reference_id: refId }),
-    });
-    loadAccountRefs(accountId);
-  };
-
   const CONTEXT_KEYS = [
     { key: "company_description", label: "Description" },
     { key: "services", label: "Services" },
@@ -229,317 +123,88 @@ export function SettingsPanel() {
 
   return (
     <div className="space-y-8">
-      {/* Accounts / Brands */}
-      <div>
-        <h2 className="text-lg font-semibold mb-4">Accounts / Brands</h2>
-        <div className="space-y-4 mb-6">
-          {accounts.map((account, i) => {
-            const isExpanded = expandedAccount === account.id;
-            const ctx = accountContexts[account.id] || [];
-            const refs = accountRefs[account.id] || [];
-
-            return (
-              <div key={account.id} className="border border-zinc-200 rounded-lg bg-white">
-                {/* Account header */}
-                <div
-                  className="flex items-center justify-between p-4 cursor-pointer"
-                  onClick={() => {
-                    const newId = isExpanded ? null : account.id;
-                    setExpandedAccount(newId);
-                    if (newId) {
-                      loadAccountLogos(newId);
-                      loadAccountRefs(newId);
-                      loadAccountMembers(newId);
-                    }
-                  }}
-                >
-                  <div className="flex items-center gap-2">
-                    <span className="font-medium">{account.name}</span>
-                    <span className="text-xs text-zinc-400">/{account.slug}</span>
-                    {account.is_default && (
-                      <span className="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded-full">Default</span>
-                    )}
-                    <div className="flex gap-0.5 ml-2">
-                      {(account.color_palette || []).slice(0, 4).map((color, ci) => (
-                        <div key={ci} className="w-3 h-3 rounded-full border border-zinc-200" style={{ backgroundColor: color }} />
-                      ))}
-                    </div>
-                  </div>
-                  <span className="text-xs text-zinc-400">{isExpanded ? "▲" : "▼"}</span>
-                </div>
-
-                {/* Expanded content */}
-                {isExpanded && (
-                  <div className="px-4 pb-4 space-y-5 border-t border-zinc-100 pt-4">
-                    {/* Logos */}
-                    <div>
-                      <label className="text-xs text-zinc-400 mb-1 block">
-                        Logos ({(accountLogos[account.id] || []).length}/6)
-                      </label>
-                      <div className="flex flex-wrap gap-2 mb-2">
-                        {(accountLogos[account.id] || []).map((logo) => (
-                          <div key={logo.id} className="relative group">
-                            <img
-                              src={logo.public_url}
-                              alt="Logo"
-                              className="h-14 w-14 object-contain rounded-lg border border-zinc-200 bg-white p-1"
-                            />
-                            <button
-                              onClick={() => deleteLogo(account.id, logo.id)}
-                              className="absolute -top-1 -right-1 bg-red-500 text-white text-xs w-4 h-4 rounded-full opacity-0 group-hover:opacity-100 transition-opacity leading-none"
-                            >
-                              x
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                      {(accountLogos[account.id] || []).length < 6 && (
-                        <input
-                          type="file"
-                          accept="image/*"
-                          onChange={(e) => {
-                            const f = e.target.files?.[0];
-                            if (f) uploadLogo(account.id, f);
-                            e.target.value = "";
-                          }}
-                          className="text-xs"
-                        />
-                      )}
-                    </div>
-
-                    {/* Fonts */}
-                    <div>
-                      <label className="text-xs text-zinc-400 mb-1 block">Fonts</label>
-                      <input
-                        type="text"
-                        value={account.fonts || ""}
-                        onChange={(e) => {
-                          const updated = [...accounts];
-                          updated[i] = { ...account, fonts: e.target.value };
-                          setAccounts(updated);
-                        }}
-                        placeholder="e.g. Montserrat Bold, Inter Regular"
-                        className="w-full px-3 py-2 border border-zinc-200 rounded-md text-sm"
-                      />
-                    </div>
-
-                    {/* Brand style */}
-                    <div>
-                      <label className="text-xs text-zinc-400 mb-1 block">Brand style</label>
+      {/* Brand context + assigned tones */}
+      {accounts.map((account) => {
+        const ctx = accountContexts[account.id] || [];
+        return (
+          <div key={account.id} className="space-y-6">
+            <div>
+              <h2 className="text-lg font-semibold mb-4">Brand context</h2>
+              <div className="space-y-3">
+                {CONTEXT_KEYS.map((ck) => {
+                  const existing = ctx.find((c) => c.key === ck.key);
+                  return (
+                    <div key={ck.key}>
+                      <label className="text-xs text-zinc-400 mb-1 block">{ck.label}</label>
                       <textarea
-                        value={account.brand_style || ""}
+                        value={existing?.value || ""}
                         onChange={(e) => {
-                          const updated = [...accounts];
-                          updated[i] = { ...account, brand_style: e.target.value };
-                          setAccounts(updated);
+                          const updated = ctx.filter((c) => c.key !== ck.key);
+                          updated.push({ key: ck.key, value: e.target.value, account_id: account.id });
+                          setAccountContexts((prev) => ({ ...prev, [account.id]: updated }));
                         }}
                         rows={2}
-                        placeholder="Describe the visual style, tone, aesthetic..."
+                        placeholder={`${ck.label}...`}
                         className="w-full px-3 py-2 border border-zinc-200 rounded-md text-sm resize-none"
                       />
+                      <button
+                        onClick={() => saveContext(account.id, ck.key, ctx.find((c) => c.key === ck.key)?.value || "")}
+                        disabled={saving}
+                        className="mt-1 px-3 py-1 bg-zinc-900 text-white text-xs rounded-md hover:bg-zinc-700 disabled:opacity-50"
+                      >
+                        Save
+                      </button>
                     </div>
+                  );
+                })}
+              </div>
+            </div>
 
-                    {/* Color palette */}
-                    <div>
-                      <label className="text-xs text-zinc-400 mb-1 block">
-                        Color palette ({(account.color_palette || []).length}/6)
-                      </label>
-                      <div className="flex items-center gap-2 flex-wrap">
-                        {(account.color_palette || []).map((color, ci) => (
-                          <div key={ci} className="relative group flex items-center gap-1">
-                            <input
-                              type="color"
-                              value={color}
-                              onChange={(e) => {
-                                const newPalette = [...(account.color_palette || [])];
-                                newPalette[ci] = e.target.value;
-                                const updated = [...accounts];
-                                updated[i] = { ...account, color_palette: newPalette };
-                                setAccounts(updated);
-                              }}
-                              className="w-8 h-8 rounded border border-zinc-200 cursor-pointer p-0"
-                            />
-                            <span className="text-xs text-zinc-400 font-mono">{color}</span>
-                            <button
-                              onClick={() => {
-                                const newPalette = (account.color_palette || []).filter((_, j) => j !== ci);
-                                const updated = [...accounts];
-                                updated[i] = { ...account, color_palette: newPalette };
-                                setAccounts(updated);
-                              }}
-                              className="text-xs text-red-400 hover:text-red-600 opacity-0 group-hover:opacity-100 transition-opacity"
-                            >
-                              x
-                            </button>
-                          </div>
-                        ))}
-                        {(account.color_palette || []).length < 6 && (
-                          <button
-                            onClick={() => {
-                              const newPalette = [...(account.color_palette || []), "#000000"];
-                              const updated = [...accounts];
-                              updated[i] = { ...account, color_palette: newPalette };
-                              setAccounts(updated);
-                            }}
-                            className="w-8 h-8 rounded border-2 border-dashed border-zinc-300 flex items-center justify-center text-zinc-400 hover:border-zinc-400 hover:text-zinc-500 text-lg leading-none"
-                          >
-                            +
-                          </button>
-                        )}
-                      </div>
+            <div>
+              <h2 className="text-lg font-semibold mb-4">Assigned tones</h2>
+              <div className="space-y-2 mb-3">
+                {(accountMembers[account.id] || []).map((m) => (
+                  <div key={m.id} className="flex items-center justify-between bg-zinc-50 rounded-md px-3 py-2">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-medium">{m.name}</span>
+                      <span className="text-xs text-zinc-400">{m.language === "en" ? "EN" : "ES"}</span>
+                      {m.tone_description && <span className="text-xs text-zinc-300 truncate max-w-[200px]">{m.tone_description}</span>}
                     </div>
-
-                    <button
-                      onClick={() => updateAccount(account.id, { brand_style: account.brand_style, color_palette: account.color_palette, fonts: account.fonts })}
-                      disabled={saving}
-                      className="px-4 py-1.5 bg-zinc-900 text-white text-xs rounded-md hover:bg-zinc-700 disabled:opacity-50"
-                    >
-                      Save Brand
-                    </button>
-
-                    {/* Context per account */}
-                    <div>
-                      <h3 className="text-sm font-medium mb-3">Context for {account.name}</h3>
-                      <div className="space-y-3">
-                        {CONTEXT_KEYS.map((ck) => {
-                          const existing = ctx.find((c) => c.key === ck.key);
-                          return (
-                            <div key={ck.key}>
-                              <label className="text-xs text-zinc-400 mb-1 block">{ck.label}</label>
-                              <textarea
-                                value={existing?.value || ""}
-                                onChange={(e) => {
-                                  const updated = ctx.filter((c) => c.key !== ck.key);
-                                  updated.push({ key: ck.key, value: e.target.value, account_id: account.id });
-                                  setAccountContexts((prev) => ({ ...prev, [account.id]: updated }));
-                                }}
-                                rows={2}
-                                placeholder={`${ck.label} for ${account.name}...`}
-                                className="w-full px-3 py-2 border border-zinc-200 rounded-md text-sm resize-none"
-                              />
-                              <button
-                                onClick={() => saveContext(account.id, ck.key, ctx.find((c) => c.key === ck.key)?.value || "")}
-                                disabled={saving}
-                                className="mt-1 px-3 py-1 bg-zinc-900 text-white text-xs rounded-md hover:bg-zinc-700 disabled:opacity-50"
-                              >
-                                Save
-                              </button>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-
-                    {/* Reference images */}
-                    <div>
-                      <h3 className="text-sm font-medium mb-3">Reference Images</h3>
-                      {refs.length > 0 && (
-                        <div className="grid grid-cols-4 gap-2 mb-3">
-                          {refs.map((ref) => (
-                            <div key={ref.id} className="relative group">
-                              <img
-                                src={ref.public_url}
-                                alt={ref.description || "Reference"}
-                                className="w-full aspect-square object-cover rounded-lg border border-zinc-200"
-                              />
-                              {ref.description && (
-                                <p className="text-xs text-zinc-400 mt-1 truncate">{ref.description}</p>
-                              )}
-                              <button
-                                onClick={() => deleteReference(account.id, ref.id)}
-                                className="absolute top-1 right-1 bg-red-500 text-white text-xs w-5 h-5 rounded-full opacity-0 group-hover:opacity-100 transition-opacity"
-                              >
-                                x
-                              </button>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                      <ReferenceUpload
-                        onUpload={(file, desc) => uploadReference(account.id, file, desc)}
-                      />
-                    </div>
-
-                    {/* Team Members for this account */}
-                    <div>
-                      <h3 className="text-sm font-medium mb-3">Team Members (tones available)</h3>
-                      <div className="space-y-2 mb-3">
-                        {(accountMembers[account.id] || []).map((m) => (
-                          <div key={m.id} className="flex items-center justify-between bg-zinc-50 rounded-md px-3 py-2">
-                            <div className="flex items-center gap-2">
-                              <span className="text-sm font-medium">{m.name}</span>
-                              <span className="text-xs text-zinc-400">{m.language === "en" ? "EN" : "ES"}</span>
-                              {m.tone_description && <span className="text-xs text-zinc-300 truncate max-w-[200px]">{m.tone_description}</span>}
-                            </div>
-                            <button onClick={() => unassignMember(account.id, m.id)} className="text-xs text-red-400 hover:text-red-600">Remove</button>
-                          </div>
-                        ))}
-                        {(accountMembers[account.id] || []).length === 0 && (
-                          <p className="text-xs text-zinc-400">No members assigned yet.</p>
-                        )}
-                      </div>
-
-                      {/* Assign existing member */}
-                      {(() => {
-                        const assignedIds = new Set((accountMembers[account.id] || []).map((m) => m.id));
-                        const unassigned = allMembers.filter((m) => !assignedIds.has(m.id));
-                        if (unassigned.length === 0) return null;
-                        return (
-                          <div className="flex items-center gap-2 mb-3">
-                            <select id={`assign-${account.id}`} className="px-2 py-1 border border-zinc-200 rounded text-xs bg-white flex-1">
-                              {unassigned.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
-                            </select>
-                            <button
-                              onClick={() => {
-                                const select = document.getElementById(`assign-${account.id}`) as HTMLSelectElement;
-                                if (select?.value) assignMember(account.id, select.value);
-                              }}
-                              className="px-3 py-1 bg-zinc-900 text-white text-xs rounded-md hover:bg-zinc-700"
-                            >
-                              Assign
-                            </button>
-                          </div>
-                        );
-                      })()}
-
-                      {/* Create new member */}
-                      <NewMemberForm onSubmit={(name, lang) => createMemberForAccount(account.id, name, lang)} />
-                    </div>
-
-                    {/* Delete account */}
-                    {!account.is_default && (
-                      <div className="pt-3 border-t border-zinc-100">
-                        <button
-                          onClick={() => deleteAccount(account.id)}
-                          className="text-xs text-red-400 hover:text-red-600"
-                        >
-                          Delete account
-                        </button>
-                      </div>
-                    )}
+                    <button onClick={() => unassignMember(account.id, m.id)} className="text-xs text-red-400 hover:text-red-600">Remove</button>
                   </div>
+                ))}
+                {(accountMembers[account.id] || []).length === 0 && (
+                  <p className="text-xs text-zinc-400">No members assigned yet.</p>
                 )}
               </div>
-            );
-          })}
-        </div>
 
-        {/* New account form */}
-        <div className="border border-dashed border-zinc-300 rounded-lg p-4">
-          <h3 className="text-sm font-medium mb-3">Add new account</h3>
-          <div className="space-y-3">
-            <div className="flex gap-3">
-              <input type="text" placeholder="Account name" value={newName} onChange={(e) => setNewName(e.target.value)} className="flex-1 px-3 py-2 border border-zinc-200 rounded-md text-sm" />
-              <input type="text" placeholder="slug (optional)" value={newSlug} onChange={(e) => setNewSlug(e.target.value)} className="w-40 px-3 py-2 border border-zinc-200 rounded-md text-sm" />
+              {(() => {
+                const assignedIds = new Set((accountMembers[account.id] || []).map((m) => m.id));
+                const unassigned = allMembers.filter((m) => !assignedIds.has(m.id));
+                if (unassigned.length === 0) return null;
+                return (
+                  <div className="flex items-center gap-2 mb-3">
+                    <select id={`assign-${account.id}`} className="px-2 py-1 border border-zinc-200 rounded text-xs bg-white flex-1">
+                      {unassigned.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+                    </select>
+                    <button
+                      onClick={() => {
+                        const select = document.getElementById(`assign-${account.id}`) as HTMLSelectElement;
+                        if (select?.value) assignMember(account.id, select.value);
+                      }}
+                      className="px-3 py-1 bg-zinc-900 text-white text-xs rounded-md hover:bg-zinc-700"
+                    >
+                      Assign
+                    </button>
+                  </div>
+                );
+              })()}
+
+              <NewMemberForm onSubmit={(name, lang) => createMemberForAccount(account.id, name, lang)} />
             </div>
-            <textarea placeholder="Brand style description (optional)" value={newStyle} onChange={(e) => setNewStyle(e.target.value)} rows={2} className="w-full px-3 py-2 border border-zinc-200 rounded-md text-sm resize-none" />
-            <input type="text" placeholder="Color palette: #FF5733, #1A1A2E (optional)" value={newColors} onChange={(e) => setNewColors(e.target.value)} className="w-full px-3 py-2 border border-zinc-200 rounded-md text-sm" />
-            <button onClick={createAccount} disabled={saving || !newName.trim()} className="px-4 py-1.5 bg-zinc-900 text-white text-xs rounded-md hover:bg-zinc-700 disabled:opacity-50">
-              Create Account
-            </button>
           </div>
-        </div>
-      </div>
+        );
+      })}
 
       {/* All Team Members (edit tone/samples) */}
       <div>
@@ -624,47 +289,6 @@ function NewMemberForm({ onSubmit }: { onSubmit: (name: string, language: string
         className="px-3 py-1.5 bg-zinc-900 text-white text-xs rounded-md hover:bg-zinc-700 disabled:opacity-50 shrink-0"
       >
         Create & Assign
-      </button>
-    </div>
-  );
-}
-
-// --- Reference image upload component ---
-
-function ReferenceUpload({ onUpload }: { onUpload: (file: File, description: string) => void }) {
-  const [desc, setDesc] = useState("");
-  const [file, setFile] = useState<File | null>(null);
-
-  const handleSubmit = () => {
-    if (!file) return;
-    onUpload(file, desc);
-    setFile(null);
-    setDesc("");
-  };
-
-  return (
-    <div className="flex items-end gap-2">
-      <div className="flex-1">
-        <input
-          type="file"
-          accept="image/*"
-          onChange={(e) => setFile(e.target.files?.[0] || null)}
-          className="text-xs"
-        />
-        <input
-          type="text"
-          placeholder="Description (optional)"
-          value={desc}
-          onChange={(e) => setDesc(e.target.value)}
-          className="w-full mt-1 px-3 py-1.5 border border-zinc-200 rounded-md text-xs"
-        />
-      </div>
-      <button
-        onClick={handleSubmit}
-        disabled={!file}
-        className="px-3 py-1.5 bg-zinc-900 text-white text-xs rounded-md hover:bg-zinc-700 disabled:opacity-50 shrink-0"
-      >
-        Upload
       </button>
     </div>
   );

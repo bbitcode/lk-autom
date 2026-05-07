@@ -1,29 +1,26 @@
 "use client";
 
 import { useState } from "react";
-import { Post, PostStatus, TeamMember } from "@/lib/types";
+import { ContentItem, PostStatus } from "@/lib/types";
+
+const TEAM = ["Daniel", "Natalia", "Tomás", "Isa", "Jorge"];
 
 export function PostCard({
   post,
   onUpdate,
   onDelete,
 }: {
-  post: Post;
-  onUpdate: (id: string, updates: Partial<Post>) => void;
+  post: ContentItem;
+  onUpdate: (id: string, updates: Partial<ContentItem>) => void;
   onDelete: (id: string) => void;
 }) {
   const [editing, setEditing] = useState(false);
-  const [editEn, setEditEn] = useState(post.content_en || "");
-  const [editEs, setEditEs] = useState(post.content_es || "");
+  const [editCopy, setEditCopy] = useState(post.copy_text || "");
   const [refineInput, setRefineInput] = useState("");
   const [refining, setRefining] = useState(false);
-  const [showLang, setShowLang] = useState<"en" | "es">(
-    post.content_en ? "en" : "es"
-  );
 
-  const content = showLang === "en" ? post.content_en : post.content_es;
   const copyToClipboard = () => {
-    if (content) navigator.clipboard.writeText(content);
+    if (post.copy_text) navigator.clipboard.writeText(post.copy_text);
   };
 
   const handleRefine = async () => {
@@ -54,7 +51,7 @@ export function PostCard({
   return (
     <div className="border border-zinc-200 rounded-lg p-4 bg-white">
       <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <span
             className={`text-xs px-2 py-0.5 rounded-full ${
               post.status === "draft"
@@ -66,6 +63,13 @@ export function PostCard({
           >
             {post.status}
           </span>
+          <span className="text-xs text-zinc-400 capitalize">{post.platform}</span>
+          {post.copy_language && (
+            <span className="text-xs text-zinc-400 uppercase">{post.copy_language}</span>
+          )}
+          {post.source_type === "manual" && (
+            <span className="text-xs text-zinc-400">manual</span>
+          )}
           {post.used_by && (
             <span className="text-xs text-zinc-400">
               Used by {post.used_by}
@@ -81,58 +85,22 @@ export function PostCard({
               Source
             </a>
           )}
-        </div>
-        <div className="flex items-center gap-2">
-          {post.content_en && post.content_es && (
-            <div className="flex border border-zinc-200 rounded-md overflow-hidden">
-              <button
-                onClick={() => setShowLang("en")}
-                className={`px-2 py-0.5 text-xs ${
-                  showLang === "en" ? "bg-zinc-900 text-white" : "text-zinc-400"
-                }`}
-              >
-                EN
-              </button>
-              <button
-                onClick={() => setShowLang("es")}
-                className={`px-2 py-0.5 text-xs ${
-                  showLang === "es" ? "bg-zinc-900 text-white" : "text-zinc-400"
-                }`}
-              >
-                ES
-              </button>
-            </div>
-          )}
+          <span className="text-xs text-zinc-300">{post.id.slice(0, 8)}</span>
         </div>
       </div>
 
       {editing ? (
         <div className="space-y-3">
-          <div>
-            <label className="text-xs text-zinc-400 mb-1 block">English</label>
-            <textarea
-              value={editEn}
-              onChange={(e) => setEditEn(e.target.value)}
-              rows={6}
-              className="w-full px-3 py-2 border border-zinc-200 rounded-md text-sm resize-none"
-            />
-          </div>
-          <div>
-            <label className="text-xs text-zinc-400 mb-1 block">Spanish</label>
-            <textarea
-              value={editEs}
-              onChange={(e) => setEditEs(e.target.value)}
-              rows={6}
-              className="w-full px-3 py-2 border border-zinc-200 rounded-md text-sm resize-none"
-            />
-          </div>
+          <textarea
+            value={editCopy}
+            onChange={(e) => setEditCopy(e.target.value)}
+            rows={6}
+            className="w-full px-3 py-2 border border-zinc-200 rounded-md text-sm resize-none"
+          />
           <div className="flex gap-2">
             <button
               onClick={() => {
-                onUpdate(post.id, {
-                  content_en: editEn || null,
-                  content_es: editEs || null,
-                } as Partial<Post>);
+                onUpdate(post.id, { copy_text: editCopy || null });
                 setEditing(false);
               }}
               className="px-3 py-1.5 bg-zinc-900 text-white text-xs rounded-md"
@@ -149,7 +117,7 @@ export function PostCard({
         </div>
       ) : (
         <p className="text-sm whitespace-pre-wrap leading-relaxed mb-3">
-          {content || "No content for this language"}
+          {post.copy_text || "No content"}
         </p>
       )}
 
@@ -207,7 +175,7 @@ export function PostCard({
                 onClick={() =>
                   onUpdate(post.id, {
                     rating: post.rating === star ? null : star,
-                  } as Partial<Post>)
+                  })
                 }
                 className={`text-sm ${
                   post.rating && star <= post.rating
@@ -223,13 +191,13 @@ export function PostCard({
             value={post.used_by || ""}
             onChange={(e) =>
               onUpdate(post.id, {
-                used_by: (e.target.value || null) as TeamMember | null,
+                used_by: e.target.value || null,
               })
             }
             className="text-xs border border-zinc-200 rounded px-2 py-1 bg-white"
           >
             <option value="">Not assigned</option>
-            {["Daniel", "Natalia", "Tomás", "Isa", "Jorge"].map((name) => (
+            {TEAM.map((name) => (
               <option key={name} value={name}>
                 {name}
               </option>
