@@ -21,12 +21,23 @@ export interface PostsyncerWorkspace {
 
 export type ScheduleType = "publish_now" | "schedule" | "draft";
 
+export interface ScheduledAtInput {
+  date: string; // YYYY-MM-DD
+  time: string; // HH:MM (24h)
+  timezone: string; // IANA tz, e.g. "America/Bogota"
+}
+
+export interface PostAccountInput {
+  id: number;
+  platform: PostsyncerPlatform;
+}
+
 export interface CreatePostInput {
   workspaceId: number;
-  accountIds: number[];
+  accounts: PostAccountInput[];
   text: string;
   scheduleType: ScheduleType;
-  scheduledAt?: string; // ISO 8601, required when scheduleType === "schedule"
+  scheduledAt?: ScheduledAtInput;
 }
 
 export interface PostsyncerPost {
@@ -68,17 +79,45 @@ export async function listAccounts(): Promise<PostsyncerAccount[]> {
   return request<PostsyncerAccount[]>("/accounts");
 }
 
+// Per-platform default settings PostSyncer accepts on `accounts[].settings`.
+// Most are optional so we only set what we know is required to publish a
+// text post — LinkedIn needs visibility (defaults to PUBLIC anyway) and
+// Instagram/Facebook accept POST/REELS/STORIES. Empty for the rest.
+function defaultSettingsFor(platform: PostsyncerPlatform): Record<string, unknown> {
+  switch (platform) {
+    case "linkedin":
+      return { visibility: "PUBLIC" };
+    case "instagram":
+      return { post_type: "POST" };
+    case "facebook":
+      return { post_type: "POST" };
+    default:
+      return {};
+  }
+}
+
 export async function createPost(input: CreatePostInput): Promise<PostsyncerPost> {
   if (input.scheduleType === "schedule" && !input.scheduledAt) {
     throw new Error("scheduledAt is required when scheduleType is 'schedule'");
   }
+
   const body: Record<string, unknown> = {
     workspace_id: input.workspaceId,
-    account_ids: input.accountIds,
     schedule_type: input.scheduleType,
     content: [{ text: input.text }],
+    accounts: input.accounts.map((a) => ({
+      id: a.id,
+      settings: defaultSettingsFor(a.platform),
+    })),
   };
-  if (input.scheduledAt) body.scheduled_at = input.scheduledAt;
+
+  if (input.scheduledAt) {
+    body.scheduled_at = {
+      date: input.scheduledAt.date,
+      time: input.scheduledAt.time,
+      timezone: input.scheduledAt.timezone,
+    };
+  }
 
   return request<PostsyncerPost>("/posts", {
     method: "POST",

@@ -332,10 +332,19 @@ export async function handleSaveManual(text: string, language: Language): Promis
 
 // --- PostSyncer handlers ---
 
+interface ParsedSchedule {
+  date: string; // YYYY-MM-DD
+  time: string; // HH:MM
+  timezone: string; // IANA, fixed to America/Bogota
+  iso: string; // ISO 8601 with offset, for our DB
+}
+
 // Parses a natural-language datetime ("mañana 8am", "tomorrow 9am", "lunes 10am",
-// "in 2 days", "2026-05-08 08:00", ISO strings...). Defaults to Bogota (UTC-5)
-// when the user does not specify a timezone.
-function parseScheduleTime(input: string): string {
+// "in 2 days", "2026-05-08 08:00", ISO strings...). Returns Bogota-local components
+// alongside an ISO timestamp suitable for our DB. PostSyncer requires the
+// {date, time, timezone} object form on the API, otherwise it auto-slots the post
+// into the next workspace queue slot — losing the user's chosen time entirely.
+function parseScheduleTime(input: string): ParsedSchedule {
   const text = input.trim().replace(/^"|"$/g, "");
 
   // Try Spanish first, then English/casual. forwardDate=true means weekday names
@@ -351,25 +360,37 @@ function parseScheduleTime(input: string): string {
   }
 
   const start = results[0].start;
+  const pad = (n: number) => String(n).padStart(2, "0");
 
-  // If the parsed string already pinned a timezone, trust it. Otherwise interpret
-  // the local components in Bogota time (UTC-5, no DST) and emit an ISO string.
+  // If the user explicitly pinned a timezone, convert the resulting instant to
+  // Bogota local components. Otherwise trust the literal parsed components as
+  // already-Bogota-local.
+  let year: number, month: number, day: number, hour: number, minute: number;
+
   if (start.isCertain("timezoneOffset")) {
-    return start.date().toISOString();
+    const utcMs = start.date().getTime();
+    const bogotaMs = utcMs - 5 * 60 * 60 * 1000;
+    const d = new Date(bogotaMs);
+    year = d.getUTCFullYear();
+    month = d.getUTCMonth() + 1;
+    day = d.getUTCDate();
+    hour = d.getUTCHours();
+    minute = d.getUTCMinutes();
+  } else {
+    year = start.get("year") ?? new Date().getFullYear();
+    month = start.get("month") ?? 1;
+    day = start.get("day") ?? 1;
+    hour = start.get("hour") ?? 9;
+    minute = start.get("minute") ?? 0;
   }
 
-  const pad = (n: number) => String(n).padStart(2, "0");
-  const year = start.get("year") ?? new Date().getFullYear();
-  const month = start.get("month") ?? 1;
-  const day = start.get("day") ?? 1;
-  const hour = start.get("hour") ?? 9;
-  const minute = start.get("minute") ?? 0;
-  const iso = `${year}-${pad(month)}-${pad(day)}T${pad(hour)}:${pad(minute)}:00-05:00`;
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) {
+  const date = `${year}-${pad(month)}-${pad(day)}`;
+  const time = `${pad(hour)}:${pad(minute)}`;
+  const iso = new Date(`${date}T${time}:00-05:00`).toISOString();
+  if (isNaN(new Date(iso).getTime())) {
     throw new Error(`Fecha inválida: "${input}".`);
   }
-  return d.toISOString();
+  return { date, time, timezone: "America/Bogota", iso };
 }
 
 // Platform aliases the user can type. Maps to PostsyncerPlatform values.
@@ -651,14 +672,14 @@ export async function handlePublishPost(
   const accounts = await postsyncerListAccounts();
   const { ids, resolved, error: targetError } = resolveTargetAccountIds(target, accounts);
   if (targetError) return targetError;
-  if (ids.length === 0) {
+  if (ids.length === 0 || resolved.length === 0) {
     return `No pude resolver "${target}" a una cuenta de PostSyncer. Usa \`/redes\` para ver opciones.`;
   }
 
-  let scheduledAt: string | undefined;
+  let schedule: ParsedSchedule | undefined;
   if (when) {
     try {
-      scheduledAt = parseScheduleTime(when);
+      schedule = parseScheduleTime(when);
     } catch (e) {
       return e instanceof Error ? e.message : "Fecha inválida.";
     }
@@ -666,10 +687,12 @@ export async function handlePublishPost(
 
   const created = await postsyncerCreatePost({
     workspaceId: getActiveWorkspaceId(),
-    accountIds: ids,
+    accounts: resolved.map((a) => ({ id: a.id, platform: a.platform })),
     text,
-    scheduleType: scheduledAt ? "schedule" : "publish_now",
-    scheduledAt,
+    scheduleType: schedule ? "schedule" : "publish_now",
+    scheduledAt: schedule
+      ? { date: schedule.date, time: schedule.time, timezone: schedule.timezone }
+      : undefined,
   });
 
   const platforms = Array.from(new Set(resolved.map((a) => a.platform)));
@@ -681,13 +704,15 @@ export async function handlePublishPost(
       postsyncer_post_id: String(created.id ?? ""),
       postsyncer_account_ids: ids,
       published_to: platforms,
-      scheduled_at: scheduledAt || null,
+      scheduled_at: schedule?.iso || null,
       publish_language: resolvedLanguage,
     })
     .eq("id", id);
 
   const accountList = resolved.map((a) => `${a.platform}/${a.name}`).join(", ");
-  const when_msg = scheduledAt ? `agendado para ${scheduledAt}` : "publicado ahora";
+  const when_msg = schedule
+    ? `agendado para ${schedule.date} ${schedule.time} (Bogotá)`
+    : "publicado ahora";
   return `*Post enviado a PostSyncer* (ID PostSyncer: \`${created.id}\`)\n• Cuentas: ${accountList}\n• ${when_msg}\n• Idioma: ${resolvedLanguage}`;
 }
 
