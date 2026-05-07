@@ -387,8 +387,17 @@ function parseScheduleTime(input: string): ParsedSchedule {
   const date = `${year}-${pad(month)}-${pad(day)}`;
   const time = `${pad(hour)}:${pad(minute)}`;
   const iso = new Date(`${date}T${time}:00-05:00`).toISOString();
-  if (isNaN(new Date(iso).getTime())) {
+  const ms = new Date(iso).getTime();
+  if (isNaN(ms)) {
     throw new Error(`Fecha inválida: "${input}".`);
+  }
+  // Reject past or near-now dates. PostSyncer silently auto-slots past schedules
+  // into the next queue slot, which surfaced as "you said tomorrow but it
+  // published in 15 minutes". Catch the typo here instead.
+  if (ms < Date.now() + 60_000) {
+    throw new Error(
+      `La fecha "${input}" resultó en \`${date} ${time}\`, que está en el pasado o muy cerca. ¿Año equivocado? Hoy es ${new Date().toISOString().slice(0, 10)}.`
+    );
   }
   return { date, time, timezone: "America/Bogota", iso };
 }
