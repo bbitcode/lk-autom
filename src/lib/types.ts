@@ -16,6 +16,13 @@ export interface Post {
   tags: string[];
   created_at: string;
   updated_at: string;
+  approved_by: string | null;
+  approved_at: string | null;
+  postsyncer_post_id: string | null;
+  postsyncer_account_ids: number[] | null;
+  published_to: string[];
+  scheduled_at: string | null;
+  publish_language: Language | null;
 }
 
 export interface TeamMemberProfile {
