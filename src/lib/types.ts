@@ -4,12 +4,15 @@ export type PostStatus = "draft" | "ready" | "used";
 
 export type Language = "en" | "es";
 
+export type SourceType = "ai_generated" | "manual";
+
 export interface Post {
   id: string;
   content_en: string | null;
   content_es: string | null;
   source_url: string | null;
   source_summary: string | null;
+  source_type: SourceType;
   status: PostStatus;
   used_by: TeamMember | null;
   rating: number | null;
@@ -76,6 +79,7 @@ export interface ContentItem {
   image_prompt: string | null;
   source_url: string | null;
   source_summary: string | null;
+  source_type: SourceType;
   status: PostStatus;
   used_by: string | null;
   rating: number | null;
@@ -83,6 +87,13 @@ export interface ContentItem {
   generated_by: "web" | "slack";
   created_at: string;
   updated_at: string;
+  approved_by: string | null;
+  approved_at: string | null;
+  postsyncer_post_id: string | null;
+  postsyncer_account_ids: number[] | null;
+  published_to: string[];
+  scheduled_at: string | null;
+  publish_language: Language | null;
 }
 
 export interface ReferenceImage {

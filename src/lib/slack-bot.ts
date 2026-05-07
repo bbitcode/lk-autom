@@ -36,7 +36,8 @@ interface SlackAction {
     | "approve_post"
     | "list_social_accounts"
     | "publish_post"
-    | "post_status";
+    | "post_status"
+    | "save_manual";
   url?: string;
   idea?: string;
   member_name?: string;
@@ -53,6 +54,8 @@ interface SlackAction {
   publish_target?: string; // "linkedin" | "x" | "twitter" | "ambas" | comma-separated account ids
   publish_language?: Language;
   publish_when?: string; // raw user-provided datetime
+  manual_text?: string;
+  manual_language?: Language;
 }
 
 const TEAM_MEMBERS = ["Daniel", "Natalia", "Tomás", "Isa", "Jorge"];
@@ -130,6 +133,7 @@ Available intents:
 - "list_social_accounts": List connected social accounts in PostSyncer (LinkedIn, X, etc).
 - "publish_post": Publish/schedule a post via PostSyncer. Needs post_id, publish_target (linkedin/x/ambas or numeric ids), publish_language (en/es), optional publish_when.
 - "post_status": Check publishing status of a post. Needs post_id.
+- "save_manual": Save a piece of copy verbatim (no AI rewrite). Use when the user says "guarda este texto literal", "save as-is", "no lo cambies", "save this exact post", etc. Needs manual_text and manual_language.
 - "general_chat": General question or conversation.
 
 Team members: ${TEAM_MEMBERS.join(", ")}
@@ -152,7 +156,9 @@ Return ONLY valid JSON:
   "content_item_id": "content item ID if mentioned",
   "publish_target": "linkedin/x/ambas/account-id if publishing",
   "publish_language": "en/es if publishing",
-  "publish_when": "natural date/time string if scheduling"
+  "publish_when": "natural date/time string if scheduling",
+  "manual_text": "the exact text to save verbatim if save_manual",
+  "manual_language": "en/es of the manual text"
 }`,
     text,
     { model: "flash", maxTokens: 500 }
@@ -496,6 +502,26 @@ export async function handleUploadReference(
   return `Imagen de referencia guardada para la cuenta activa. ${description ? `Descripción: "${description}"` : ""}`;
 }
 
+export async function handleSaveManual(text: string, language: Language): Promise<string> {
+  const supabase = getSupabase();
+  const { data: post, error } = await supabase
+    .from("posts")
+    .insert({
+      content_en: language === "en" ? text : null,
+      content_es: language === "es" ? text : null,
+      source_url: null,
+      source_summary: null,
+      source_type: "manual",
+      status: "draft",
+      tags: [],
+    })
+    .select()
+    .single();
+  if (error) throw new Error(error.message);
+
+  return `*Copy guardado tal cual* (ID: \`${post.id}\`) — idioma: ${language}\nUsa \`/aprobar ${post.id}\` y luego \`/publicar ${post.id} [linkedin|x|ambas]\` para programarlo.`;
+}
+
 // --- PostSyncer handlers ---
 
 // Bogota is fixed UTC-5 (no DST). Accepts "YYYY-MM-DD HH:MM", ISO, or with offset.
@@ -575,20 +601,87 @@ function resolveTargetAccountIds(
   return { ids, resolved };
 }
 
-export async function handleApprovePost(postId: string): Promise<string> {
-  const supabase = getSupabase();
-  const { data: post, error } = await supabase.from("posts").select("id, status").eq("id", postId).single();
-  if (error || !post) return `No encontré el post con ID \`${postId}\`.`;
-  if (post.status === "used") return `El post \`${postId}\` ya fue publicado.`;
-  if (post.status === "ready") return `El post \`${postId}\` ya estaba aprobado.`;
+// Looks up an item in either `posts` or `content_items` so /aprobar /publicar /estado
+// can target both the legacy LinkedIn flow and the multi-platform content flow.
+type PublishableSource = "posts" | "content_items";
 
-  const { error: updateError } = await supabase
+interface PublishableRecord {
+  source: PublishableSource;
+  id: string;
+  status: string;
+  text_en: string | null;
+  text_es: string | null;
+  default_language: Language | null;
+  approved_at: string | null;
+  postsyncer_post_id: string | null;
+  published_to: string[] | null;
+  scheduled_at: string | null;
+  publish_language: Language | null;
+}
+
+async function findPublishable(id: string): Promise<PublishableRecord | null> {
+  const supabase = getSupabase();
+
+  const { data: post } = await supabase
     .from("posts")
+    .select("id, status, content_en, content_es, approved_at, postsyncer_post_id, published_to, scheduled_at, publish_language")
+    .eq("id", id)
+    .maybeSingle();
+  if (post) {
+    return {
+      source: "posts",
+      id: post.id,
+      status: post.status,
+      text_en: post.content_en,
+      text_es: post.content_es,
+      default_language: null,
+      approved_at: post.approved_at,
+      postsyncer_post_id: post.postsyncer_post_id,
+      published_to: post.published_to,
+      scheduled_at: post.scheduled_at,
+      publish_language: post.publish_language,
+    };
+  }
+
+  const { data: item } = await supabase
+    .from("content_items")
+    .select("id, status, copy_text, copy_language, approved_at, postsyncer_post_id, published_to, scheduled_at, publish_language")
+    .eq("id", id)
+    .maybeSingle();
+  if (item) {
+    return {
+      source: "content_items",
+      id: item.id,
+      status: item.status,
+      text_en: item.copy_language === "en" ? item.copy_text : null,
+      text_es: item.copy_language === "es" ? item.copy_text : null,
+      default_language: item.copy_language as Language | null,
+      approved_at: item.approved_at,
+      postsyncer_post_id: item.postsyncer_post_id,
+      published_to: item.published_to,
+      scheduled_at: item.scheduled_at,
+      publish_language: item.publish_language,
+    };
+  }
+
+  return null;
+}
+
+export async function handleApprovePost(postId: string): Promise<string> {
+  const record = await findPublishable(postId);
+  if (!record) return `No encontré el post con ID \`${postId}\`.`;
+  if (record.status === "used") return `El post \`${postId}\` ya fue publicado.`;
+  if (record.status === "ready") return `El post \`${postId}\` ya estaba aprobado.`;
+
+  const supabase = getSupabase();
+  const { error: updateError } = await supabase
+    .from(record.source)
     .update({ status: "ready", approved_at: new Date().toISOString(), approved_by: "slack" })
     .eq("id", postId);
   if (updateError) throw new Error(updateError.message);
 
-  return `*Post aprobado* \`${postId}\` ✅\nUsa \`/publicar ${postId} [linkedin|x|ambas] --idioma [en|es]\` para publicar.`;
+  const idiomaHint = record.default_language ? "" : " --idioma [en|es]";
+  return `*Post aprobado* \`${postId}\` ✅\nUsa \`/publicar ${postId} [linkedin|x|ambas]${idiomaHint}\` para publicar.`;
 }
 
 export async function handleListSocialAccounts(): Promise<string> {
@@ -621,17 +714,21 @@ export async function handlePublishPost(
   when: string | undefined
 ): Promise<string> {
   if (!target) return "Necesito el destino. Ejemplo: `/publicar abc123 linkedin --idioma es`";
-  if (!language) return "¿En qué idioma? Agrega `--idioma en` o `--idioma es`.";
 
-  const supabase = getSupabase();
-  const { data: post, error } = await supabase.from("posts").select("*").eq("id", postId).single();
-  if (error || !post) return `No encontré el post con ID \`${postId}\`.`;
-  if (post.status !== "ready") {
-    return `El post \`${postId}\` está en estado \`${post.status}\`. Apruébalo primero con \`/aprobar ${postId}\`.`;
+  const record = await findPublishable(postId);
+  if (!record) return `No encontré el post con ID \`${postId}\`.`;
+  if (record.status !== "ready") {
+    return `El post \`${postId}\` está en estado \`${record.status}\`. Apruébalo primero con \`/aprobar ${postId}\`.`;
   }
 
-  const text = language === "en" ? post.content_en : post.content_es;
-  if (!text) return `El post \`${postId}\` no tiene contenido en ${language === "en" ? "inglés" : "español"}.`;
+  const resolvedLanguage: Language | undefined = language || record.default_language || undefined;
+  if (!resolvedLanguage) return "¿En qué idioma? Agrega `--idioma en` o `--idioma es`.";
+
+  const text = resolvedLanguage === "en" ? record.text_en : record.text_es;
+  if (!text) {
+    const langLabel = resolvedLanguage === "en" ? "inglés" : "español";
+    return `El post \`${postId}\` no tiene contenido en ${langLabel}.`;
+  }
 
   const accounts = await postsyncerListAccounts();
   const { ids, resolved, error: targetError } = resolveTargetAccountIds(target, accounts);
@@ -655,41 +752,39 @@ export async function handlePublishPost(
   });
 
   const platforms = Array.from(new Set(resolved.map((a) => a.platform)));
+  const supabase = getSupabase();
   await supabase
-    .from("posts")
+    .from(record.source)
     .update({
       status: "used",
       postsyncer_post_id: String(created.id ?? ""),
       postsyncer_account_ids: ids,
       published_to: platforms,
       scheduled_at: scheduledAt || null,
-      publish_language: language,
+      publish_language: resolvedLanguage,
     })
     .eq("id", postId);
 
   const accountList = resolved.map((a) => `${a.platform}/${a.name}`).join(", ");
   const when_msg = scheduledAt ? `agendado para ${scheduledAt}` : "publicado ahora";
-  return `*Post enviado a PostSyncer* (ID PostSyncer: \`${created.id}\`)\n• Cuentas: ${accountList}\n• ${when_msg}\n• Idioma: ${language}`;
+  const sourceLabel = record.source === "content_items" ? " (content item)" : "";
+  return `*Post enviado a PostSyncer*${sourceLabel} (ID PostSyncer: \`${created.id}\`)\n• Cuentas: ${accountList}\n• ${when_msg}\n• Idioma: ${resolvedLanguage}`;
 }
 
 export async function handlePostStatus(postId: string): Promise<string> {
-  const supabase = getSupabase();
-  const { data: post, error } = await supabase
-    .from("posts")
-    .select("id, status, postsyncer_post_id, published_to, scheduled_at, publish_language, approved_at")
-    .eq("id", postId)
-    .single();
-  if (error || !post) return `No encontré el post con ID \`${postId}\`.`;
+  const record = await findPublishable(postId);
+  if (!record) return `No encontré el post con ID \`${postId}\`.`;
 
-  let result = `*Post \`${postId}\`*\n• Estado local: ${post.status}\n`;
-  if (post.approved_at) result += `• Aprobado: ${post.approved_at}\n`;
-  if (post.published_to?.length) result += `• Plataformas: ${post.published_to.join(", ")}\n`;
-  if (post.publish_language) result += `• Idioma: ${post.publish_language}\n`;
-  if (post.scheduled_at) result += `• Agendado: ${post.scheduled_at}\n`;
+  const sourceLabel = record.source === "content_items" ? "content item" : "post";
+  let result = `*${sourceLabel.charAt(0).toUpperCase() + sourceLabel.slice(1)} \`${postId}\`*\n• Estado local: ${record.status}\n`;
+  if (record.approved_at) result += `• Aprobado: ${record.approved_at}\n`;
+  if (record.published_to?.length) result += `• Plataformas: ${record.published_to.join(", ")}\n`;
+  if (record.publish_language) result += `• Idioma: ${record.publish_language}\n`;
+  if (record.scheduled_at) result += `• Agendado: ${record.scheduled_at}\n`;
 
-  if (post.postsyncer_post_id) {
+  if (record.postsyncer_post_id) {
     try {
-      const remote = await postsyncerGetPost(post.postsyncer_post_id);
+      const remote = await postsyncerGetPost(record.postsyncer_post_id);
       result += `\n*Estado en PostSyncer:*\n• ID: \`${remote.id}\`\n`;
       if (remote.status) result += `• Status: ${remote.status}\n`;
       if (remote.published_at) result += `• Publicado: ${remote.published_at}\n`;
@@ -769,6 +864,16 @@ function parseCommand(text: string): SlackAction | null {
   const borrarMatch = text.match(/^\/borrar-imagen\s+([a-f0-9-]+)/i);
   if (borrarMatch) return { intent: "delete_image", content_item_id: borrarMatch[1] };
 
+  // /copia [es|en] <texto>  — defaults to es when language is omitted.
+  const copiaMatch = text.match(/^\/copia\s+(?:(en|es)\s+)?([\s\S]+)/i);
+  if (copiaMatch) {
+    return {
+      intent: "save_manual",
+      manual_text: copiaMatch[2].trim(),
+      manual_language: ((copiaMatch[1]?.toLowerCase() as Language) || "es"),
+    };
+  }
+
   // PostSyncer commands
   const aprobarMatch = text.match(/^\/aprobar\s+([a-f0-9-]+)\s*$/i);
   if (aprobarMatch) return { intent: "approve_post", post_id: aprobarMatch[1] };
@@ -828,6 +933,10 @@ const HELP_MESSAGE = `*Comandos disponibles:*
 *Cuentas:*
 • \`/cuenta [slug]\` — Cambia cuenta activa
 • \`/cuentas\` — Lista cuentas disponibles
+
+*Texto literal (sin IA):*
+• \`/copia [texto]\` — Guarda el copy tal cual (default español)
+• \`/copia en [texto]\` — Guarda en inglés
 
 *Publicación (PostSyncer):*
 • \`/aprobar [ID]\` — Marca el post como listo para publicar
@@ -980,6 +1089,10 @@ export async function processSlackMessage(
         case "post_status":
           if (!command.post_id) return { text: "Necesito el ID. Ejemplo: `/estado abc123`" };
           return { text: await handlePostStatus(command.post_id) };
+
+        case "save_manual":
+          if (!command.manual_text) return { text: "Necesito el texto. Ejemplo: `/copia Mi post tal cual quiero que se publique`" };
+          return { text: await handleSaveManual(command.manual_text, command.manual_language || "es") };
       }
     }
 
@@ -1029,6 +1142,9 @@ export async function processSlackMessage(
       case "post_status":
         if (!action.post_id) return { text: "Necesito el ID del post." };
         return { text: await handlePostStatus(action.post_id) };
+      case "save_manual":
+        if (!action.manual_text) return { text: "Necesito el texto a guardar literal." };
+        return { text: await handleSaveManual(action.manual_text, action.manual_language || "es") };
       case "general_chat":
       default:
         return { text: await handleGeneralChat(cleanText) };

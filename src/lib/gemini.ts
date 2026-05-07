@@ -15,7 +15,8 @@ export async function generateText(
     contents: userPrompt,
     config: {
       systemInstruction: systemPrompt,
-      maxOutputTokens: options?.maxTokens ?? 1500,
+      // Higher cap so 2.5-pro thinking tokens don't starve the JSON output.
+      maxOutputTokens: options?.maxTokens ?? 8000,
     },
   });
 

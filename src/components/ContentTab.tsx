@@ -45,6 +45,7 @@ export function ContentTab({ account }: { account: Account | null }) {
   const [imageFormat, setImageFormat] = useState<ImageFormat>("1:1");
   const imageModel = "nano-banana";
   const [useBrandStyle, setUseBrandStyle] = useState(true);
+  const [useAICopy, setUseAICopy] = useState(true);
   const [referenceFile, setReferenceFile] = useState<File | null>(null);
   const [referencePreview, setReferencePreview] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
@@ -83,6 +84,7 @@ export function ContentTab({ account }: { account: Account | null }) {
           image_model: imageModel,
           use_brand_style: useBrandStyle,
           reference_image_base64: referenceImageBase64,
+          source_type: useAICopy ? "ai_generated" : "manual",
         }),
       });
       const data = await res.json();
@@ -177,12 +179,25 @@ export function ContentTab({ account }: { account: Account | null }) {
       {/* Copy input */}
       {contentType !== "image_only" && (
         <div className="space-y-3">
-          <label className="text-xs text-zinc-400 block">Idea or topic for the copy</label>
+          <div className="flex items-center justify-between">
+            <label className="text-xs text-zinc-400 block">
+              {useAICopy ? "Idea or topic for the copy" : "Final copy (saved as-is)"}
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={useAICopy}
+                onChange={(e) => setUseAICopy(e.target.checked)}
+                className="rounded"
+              />
+              <span className="text-xs text-zinc-500">Mejorar con IA</span>
+            </label>
+          </div>
           <textarea
-            placeholder="Describe what the post should be about..."
+            placeholder={useAICopy ? "Describe what the post should be about..." : "Paste the final copy you want to save..."}
             value={copyInput}
             onChange={(e) => setCopyInput(e.target.value)}
-            rows={3}
+            rows={useAICopy ? 3 : 6}
             className="w-full px-4 py-3 border border-zinc-200 rounded-lg text-sm resize-none"
           />
           <div className="flex items-center gap-4">
@@ -197,19 +212,21 @@ export function ContentTab({ account }: { account: Account | null }) {
                 <option value="en">English</option>
               </select>
             </div>
-            <div className="flex items-center gap-2">
-              <label className="text-xs text-zinc-400">Tone of:</label>
-              <select
-                value={memberName}
-                onChange={(e) => setMemberName(e.target.value)}
-                className="px-2 py-1 border border-zinc-200 rounded text-xs bg-white"
-              >
-                {accountMembersList.length === 0 && <option value="">No members assigned</option>}
-                {accountMembersList.map((m) => (
-                  <option key={m.id} value={m.name}>{m.name}</option>
-                ))}
-              </select>
-            </div>
+            {useAICopy && (
+              <div className="flex items-center gap-2">
+                <label className="text-xs text-zinc-400">Tone of:</label>
+                <select
+                  value={memberName}
+                  onChange={(e) => setMemberName(e.target.value)}
+                  className="px-2 py-1 border border-zinc-200 rounded text-xs bg-white"
+                >
+                  {accountMembersList.length === 0 && <option value="">No members assigned</option>}
+                  {accountMembersList.map((m) => (
+                    <option key={m.id} value={m.name}>{m.name}</option>
+                  ))}
+                </select>
+              </div>
+            )}
           </div>
         </div>
       )}

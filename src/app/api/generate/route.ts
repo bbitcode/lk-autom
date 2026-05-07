@@ -35,8 +35,39 @@ async function scrapeUrl(url: string): Promise<string> {
 
 export async function POST(req: NextRequest) {
   try {
-    const { type, url, idea, member_name, focus } = await req.json();
+    const { type, url, idea, member_name, focus, source_type, language } = await req.json();
     const supabase = getSupabase();
+
+    // Manual mode: save the user's text verbatim without invoking Gemini.
+    if (source_type === "manual") {
+      if (type !== "idea" || !idea?.trim()) {
+        return NextResponse.json(
+          { error: "Manual mode requires type=idea with the final text in `idea`" },
+          { status: 400 }
+        );
+      }
+      if (language !== "en" && language !== "es") {
+        return NextResponse.json(
+          { error: "Manual mode requires language=en or language=es" },
+          { status: 400 }
+        );
+      }
+      const { data: post, error } = await supabase
+        .from("posts")
+        .insert({
+          content_en: language === "en" ? idea : null,
+          content_es: language === "es" ? idea : null,
+          source_url: null,
+          source_summary: null,
+          source_type: "manual",
+          status: "draft",
+          tags: [],
+        })
+        .select()
+        .single();
+      if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+      return NextResponse.json(post);
+    }
 
     const { data: companyContext } = await supabase
       .from("company_context")

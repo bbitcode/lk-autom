@@ -30,6 +30,8 @@ export default function Home() {
   const [genInput, setGenInput] = useState("");
   const [genMember, setGenMember] = useState<TeamMember>("Daniel");
   const [genFocus, setGenFocus] = useState("");
+  const [genUseAI, setGenUseAI] = useState(true);
+  const [genManualLanguage, setGenManualLanguage] = useState<Language>("es");
 
   // Tabs
   const [tab, setTab] = useState<Tab>("content");
@@ -53,6 +55,7 @@ export default function Home() {
 
   const handleGenerate = async () => {
     if (!genInput.trim()) return;
+    const isManual = !genUseAI && genType === "idea";
     setGenerating(true);
     try {
       const res = await fetch("/api/generate", {
@@ -63,6 +66,8 @@ export default function Home() {
           [genType === "url" ? "url" : "idea"]: genInput,
           member_name: genMember,
           focus: genType === "url" ? genFocus : undefined,
+          source_type: isManual ? "manual" : "ai_generated",
+          language: isManual ? genManualLanguage : undefined,
         }),
       });
       const data = await res.json();
@@ -277,19 +282,51 @@ export default function Home() {
               />
             )}
 
-            <div className="flex items-center gap-6">
+            {genType === "idea" && (
               <div className="flex items-center gap-2">
-                <label className="text-sm text-zinc-500">Tone of:</label>
-                <select
-                  value={genMember}
-                  onChange={(e) => setGenMember(e.target.value as TeamMember)}
-                  className="px-3 py-1.5 border border-zinc-200 rounded-md text-sm bg-white"
-                >
-                  {TEAM.map((name) => (
-                    <option key={name} value={name}>{name}</option>
-                  ))}
-                </select>
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={genUseAI}
+                    onChange={(e) => setGenUseAI(e.target.checked)}
+                    className="rounded"
+                  />
+                  <span className="text-sm text-zinc-600">Mejorar con IA</span>
+                </label>
+                <span className="text-xs text-zinc-400">
+                  {genUseAI ? "(Gemini reescribe la idea)" : "(se guarda tal cual)"}
+                </span>
               </div>
+            )}
+
+            <div className="flex items-center gap-6">
+              {genUseAI && (
+                <div className="flex items-center gap-2">
+                  <label className="text-sm text-zinc-500">Tone of:</label>
+                  <select
+                    value={genMember}
+                    onChange={(e) => setGenMember(e.target.value as TeamMember)}
+                    className="px-3 py-1.5 border border-zinc-200 rounded-md text-sm bg-white"
+                  >
+                    {TEAM.map((name) => (
+                      <option key={name} value={name}>{name}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              {!genUseAI && genType === "idea" && (
+                <div className="flex items-center gap-2">
+                  <label className="text-sm text-zinc-500">Language:</label>
+                  <select
+                    value={genManualLanguage}
+                    onChange={(e) => setGenManualLanguage(e.target.value as Language)}
+                    className="px-3 py-1.5 border border-zinc-200 rounded-md text-sm bg-white"
+                  >
+                    <option value="es">Spanish</option>
+                    <option value="en">English</option>
+                  </select>
+                </div>
+              )}
             </div>
 
             <button
@@ -297,7 +334,7 @@ export default function Home() {
               disabled={generating || !genInput.trim()}
               className="px-6 py-3 bg-zinc-900 text-white rounded-lg hover:bg-zinc-700 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium"
             >
-              {generating ? "Generating..." : "Generate Post"}
+              {generating ? "Generating..." : (genUseAI || genType === "url") ? "Generate Post" : "Save Post"}
             </button>
           </div>
         </div>

@@ -23,6 +23,7 @@ export async function POST(req: NextRequest) {
       image_model: _image_model,
       use_brand_style = true,
       reference_image_base64,
+      source_type = "ai_generated",
     } = body as {
       account_id: string;
       platform: Platform;
@@ -35,6 +36,7 @@ export async function POST(req: NextRequest) {
       image_model?: string;
       use_brand_style?: boolean;
       reference_image_base64?: string;
+      source_type?: "ai_generated" | "manual";
     };
 
     if (!account_id || !platform || !content_type) {
@@ -57,35 +59,40 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ error: "copy_input is required for copy generation" }, { status: 400 });
       }
 
-      // Get account-specific company context and member profile for system prompt
-      const { data: companyContext } = await supabase.from("company_context").select("*").eq("account_id", account_id);
-      let memberProfile = null;
-      if (member_name) {
-        const { data } = await supabase
-          .from("team_members")
-          .select("*")
-          .eq("name", member_name)
-          .single();
-        memberProfile = data;
+      if (source_type === "manual") {
+        // Save user text verbatim, skip Gemini.
+        copyText = copy_input;
+      } else {
+        // Get account-specific company context and member profile for system prompt
+        const { data: companyContext } = await supabase.from("company_context").select("*").eq("account_id", account_id);
+        let memberProfile = null;
+        if (member_name) {
+          const { data } = await supabase
+            .from("team_members")
+            .select("*")
+            .eq("name", member_name)
+            .single();
+          memberProfile = data;
+        }
+
+        const { data: ratedPosts } = await supabase
+          .from("posts")
+          .select("content_en, content_es, rating")
+          .gte("rating", 4)
+          .not("rating", "is", null);
+
+        const ratedExamples = (ratedPosts || [])
+          .map((p) => ({
+            content: ((p.content_en || p.content_es || "") as string).slice(0, 1500),
+            rating: p.rating as number,
+          }))
+          .filter((e) => e.content.length > 0);
+
+        const systemPrompt = buildSystemPrompt(companyContext || [], memberProfile, ratedExamples);
+        const userPrompt = buildPlatformCopyPrompt(platform, copy_input, copy_language);
+
+        copyText = await generateText(systemPrompt, userPrompt);
       }
-
-      const { data: ratedPosts } = await supabase
-        .from("posts")
-        .select("content_en, content_es, rating")
-        .gte("rating", 4)
-        .not("rating", "is", null);
-
-      const ratedExamples = (ratedPosts || [])
-        .map((p) => ({
-          content: ((p.content_en || p.content_es || "") as string).slice(0, 1500),
-          rating: p.rating as number,
-        }))
-        .filter((e) => e.content.length > 0);
-
-      const systemPrompt = buildSystemPrompt(companyContext || [], memberProfile, ratedExamples);
-      const userPrompt = buildPlatformCopyPrompt(platform, copy_input, copy_language);
-
-      copyText = await generateText(systemPrompt, userPrompt);
     }
 
     // Generate image if needed
@@ -122,6 +129,7 @@ export async function POST(req: NextRequest) {
         status: "draft",
         tags: [],
         generated_by: "web",
+        source_type,
       })
       .select()
       .single();
