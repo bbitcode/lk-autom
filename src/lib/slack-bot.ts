@@ -9,7 +9,14 @@ import { generateText } from "./gemini";
 import { generateContentImage } from "./image-gen";
 import { buildPlatformCopyPrompt } from "./platforms";
 import { uploadFile } from "./storage";
-import type { ImageFormat, Platform } from "./types";
+import {
+  createPost as postsyncerCreatePost,
+  listAccounts as postsyncerListAccounts,
+  getPost as postsyncerGetPost,
+  getActiveWorkspaceId,
+  type PostsyncerAccount,
+} from "./postsyncer";
+import type { ImageFormat, Language, Platform } from "./types";
 
 interface SlackAction {
   intent:
@@ -25,7 +32,11 @@ interface SlackAction {
     | "list_accounts"
     | "upload_reference"
     | "delete_image"
-    | "list_images";
+    | "list_images"
+    | "approve_post"
+    | "list_social_accounts"
+    | "publish_post"
+    | "post_status";
   url?: string;
   idea?: string;
   member_name?: string;
@@ -39,6 +50,9 @@ interface SlackAction {
   image_format?: ImageFormat;
   image_model?: string;
   content_item_id?: string;
+  publish_target?: string; // "linkedin" | "x" | "twitter" | "ambas" | comma-separated account ids
+  publish_language?: Language;
+  publish_when?: string; // raw user-provided datetime
 }
 
 const TEAM_MEMBERS = ["Daniel", "Natalia", "Tomás", "Isa", "Jorge"];
@@ -112,6 +126,10 @@ Available intents:
 - "list_accounts": List available accounts/brands.
 - "list_images": Show recent generated images.
 - "delete_image": Delete a generated image by ID.
+- "approve_post": Approve a post for publishing. Needs post_id.
+- "list_social_accounts": List connected social accounts in PostSyncer (LinkedIn, X, etc).
+- "publish_post": Publish/schedule a post via PostSyncer. Needs post_id, publish_target (linkedin/x/ambas or numeric ids), publish_language (en/es), optional publish_when.
+- "post_status": Check publishing status of a post. Needs post_id.
 - "general_chat": General question or conversation.
 
 Team members: ${TEAM_MEMBERS.join(", ")}
@@ -131,7 +149,10 @@ Return ONLY valid JSON:
   "image_prompt": "image description if generating image",
   "image_format": "1:1/4:5/9:16/16:9 if specified",
   "image_model": "nano-banana",
-  "content_item_id": "content item ID if mentioned"
+  "content_item_id": "content item ID if mentioned",
+  "publish_target": "linkedin/x/ambas/account-id if publishing",
+  "publish_language": "en/es if publishing",
+  "publish_when": "natural date/time string if scheduling"
 }`,
     text,
     { model: "flash", maxTokens: 500 }
@@ -475,6 +496,213 @@ export async function handleUploadReference(
   return `Imagen de referencia guardada para la cuenta activa. ${description ? `Descripción: "${description}"` : ""}`;
 }
 
+// --- PostSyncer handlers ---
+
+// Bogota is fixed UTC-5 (no DST). Accepts "YYYY-MM-DD HH:MM", ISO, or with offset.
+function parseScheduleTime(input: string): string {
+  const trimmed = input.trim();
+  const normalized = trimmed.includes("T") ? trimmed : trimmed.replace(/\s+/, "T");
+  const hasOffset = /Z$|[+-]\d{2}:?\d{2}$/.test(normalized);
+  const candidate = hasOffset ? normalized : `${normalized}-05:00`;
+  const date = new Date(candidate);
+  if (isNaN(date.getTime())) throw new Error(`Fecha inválida: "${input}". Usa formato "2026-04-28 10:00".`);
+  return date.toISOString();
+}
+
+function resolveTargetAccountIds(
+  target: string,
+  accounts: PostsyncerAccount[]
+): { ids: number[]; resolved: PostsyncerAccount[]; error?: string } {
+  const lower = target.toLowerCase().trim();
+
+  // Numeric / comma-separated ids
+  if (/^[\d,\s]+$/.test(target)) {
+    const ids = target.split(",").map((s) => parseInt(s.trim(), 10)).filter((n) => !isNaN(n));
+    const resolved = accounts.filter((a) => ids.includes(a.id));
+    if (resolved.length !== ids.length) {
+      const missing = ids.filter((id) => !resolved.find((a) => a.id === id));
+      return { ids: [], resolved: [], error: `IDs no encontrados: ${missing.join(", ")}` };
+    }
+    return { ids, resolved };
+  }
+
+  const platformMap: Record<string, string[]> = {
+    linkedin: ["linkedin"],
+    x: ["twitter"],
+    twitter: ["twitter"],
+    ambas: ["linkedin", "twitter"],
+    ambos: ["linkedin", "twitter"],
+  };
+  const platforms = platformMap[lower];
+  if (!platforms) {
+    return { ids: [], resolved: [], error: `Target inválido: "${target}". Usa linkedin, x, ambas, o IDs (ver \`/redes\`).` };
+  }
+
+  const matched = accounts.filter((a) => platforms.includes(a.platform) && !a.has_expired);
+  if (matched.length === 0) {
+    return { ids: [], resolved: [], error: `No hay cuentas conectadas para: ${platforms.join(", ")}.` };
+  }
+
+  // If multiple accounts match a single platform, prefer is_default; otherwise require user to pick.
+  if (lower === "linkedin" || lower === "x" || lower === "twitter") {
+    const platform = platforms[0];
+    const ofPlatform = matched.filter((a) => a.platform === platform);
+    if (ofPlatform.length > 1) {
+      const defaults = ofPlatform.filter((a) => a.is_default);
+      if (defaults.length === 1) {
+        return { ids: [defaults[0].id], resolved: defaults };
+      }
+      const list = ofPlatform.map((a) => `\`${a.id}\` ${a.name}${a.username ? ` (@${a.username})` : ""}`).join(", ");
+      return {
+        ids: [],
+        resolved: [],
+        error: `Hay varias cuentas de ${platform}. Especifica el ID con \`--cuenta [id]\` o pásalo directo: ${list}`,
+      };
+    }
+    return { ids: ofPlatform.map((a) => a.id), resolved: ofPlatform };
+  }
+
+  // ambas: pick one of each platform (default if available, else first)
+  const ids: number[] = [];
+  const resolved: PostsyncerAccount[] = [];
+  for (const platform of platforms) {
+    const ofPlatform = matched.filter((a) => a.platform === platform);
+    if (ofPlatform.length === 0) continue;
+    const pick = ofPlatform.find((a) => a.is_default) || ofPlatform[0];
+    ids.push(pick.id);
+    resolved.push(pick);
+  }
+  return { ids, resolved };
+}
+
+export async function handleApprovePost(postId: string): Promise<string> {
+  const supabase = getSupabase();
+  const { data: post, error } = await supabase.from("posts").select("id, status").eq("id", postId).single();
+  if (error || !post) return `No encontré el post con ID \`${postId}\`.`;
+  if (post.status === "used") return `El post \`${postId}\` ya fue publicado.`;
+  if (post.status === "ready") return `El post \`${postId}\` ya estaba aprobado.`;
+
+  const { error: updateError } = await supabase
+    .from("posts")
+    .update({ status: "ready", approved_at: new Date().toISOString(), approved_by: "slack" })
+    .eq("id", postId);
+  if (updateError) throw new Error(updateError.message);
+
+  return `*Post aprobado* \`${postId}\` ✅\nUsa \`/publicar ${postId} [linkedin|x|ambas] --idioma [en|es]\` para publicar.`;
+}
+
+export async function handleListSocialAccounts(): Promise<string> {
+  const accounts = await postsyncerListAccounts();
+  if (accounts.length === 0) return "No hay cuentas conectadas en PostSyncer.";
+
+  const byPlatform = new Map<string, PostsyncerAccount[]>();
+  for (const a of accounts) {
+    const list = byPlatform.get(a.platform) || [];
+    list.push(a);
+    byPlatform.set(a.platform, list);
+  }
+
+  let result = "*Cuentas conectadas en PostSyncer:*\n\n";
+  for (const [platform, list] of byPlatform) {
+    result += `*${platform}*\n`;
+    for (const a of list) {
+      const flags = [a.is_default ? "default" : "", a.has_expired ? "⚠️ expirada" : ""].filter(Boolean).join(", ");
+      result += `• \`${a.id}\` ${a.name}${a.username ? ` (@${a.username})` : ""}${flags ? ` — ${flags}` : ""}\n`;
+    }
+    result += "\n";
+  }
+  return result;
+}
+
+export async function handlePublishPost(
+  postId: string,
+  target: string | undefined,
+  language: Language | undefined,
+  when: string | undefined
+): Promise<string> {
+  if (!target) return "Necesito el destino. Ejemplo: `/publicar abc123 linkedin --idioma es`";
+  if (!language) return "¿En qué idioma? Agrega `--idioma en` o `--idioma es`.";
+
+  const supabase = getSupabase();
+  const { data: post, error } = await supabase.from("posts").select("*").eq("id", postId).single();
+  if (error || !post) return `No encontré el post con ID \`${postId}\`.`;
+  if (post.status !== "ready") {
+    return `El post \`${postId}\` está en estado \`${post.status}\`. Apruébalo primero con \`/aprobar ${postId}\`.`;
+  }
+
+  const text = language === "en" ? post.content_en : post.content_es;
+  if (!text) return `El post \`${postId}\` no tiene contenido en ${language === "en" ? "inglés" : "español"}.`;
+
+  const accounts = await postsyncerListAccounts();
+  const { ids, resolved, error: targetError } = resolveTargetAccountIds(target, accounts);
+  if (targetError) return targetError;
+
+  let scheduledAt: string | undefined;
+  if (when) {
+    try {
+      scheduledAt = parseScheduleTime(when);
+    } catch (e) {
+      return e instanceof Error ? e.message : "Fecha inválida.";
+    }
+  }
+
+  const created = await postsyncerCreatePost({
+    workspaceId: getActiveWorkspaceId(),
+    accountIds: ids,
+    text,
+    scheduleType: scheduledAt ? "schedule" : "publish_now",
+    scheduledAt,
+  });
+
+  const platforms = Array.from(new Set(resolved.map((a) => a.platform)));
+  await supabase
+    .from("posts")
+    .update({
+      status: "used",
+      postsyncer_post_id: String(created.id ?? ""),
+      postsyncer_account_ids: ids,
+      published_to: platforms,
+      scheduled_at: scheduledAt || null,
+      publish_language: language,
+    })
+    .eq("id", postId);
+
+  const accountList = resolved.map((a) => `${a.platform}/${a.name}`).join(", ");
+  const when_msg = scheduledAt ? `agendado para ${scheduledAt}` : "publicado ahora";
+  return `*Post enviado a PostSyncer* (ID PostSyncer: \`${created.id}\`)\n• Cuentas: ${accountList}\n• ${when_msg}\n• Idioma: ${language}`;
+}
+
+export async function handlePostStatus(postId: string): Promise<string> {
+  const supabase = getSupabase();
+  const { data: post, error } = await supabase
+    .from("posts")
+    .select("id, status, postsyncer_post_id, published_to, scheduled_at, publish_language, approved_at")
+    .eq("id", postId)
+    .single();
+  if (error || !post) return `No encontré el post con ID \`${postId}\`.`;
+
+  let result = `*Post \`${postId}\`*\n• Estado local: ${post.status}\n`;
+  if (post.approved_at) result += `• Aprobado: ${post.approved_at}\n`;
+  if (post.published_to?.length) result += `• Plataformas: ${post.published_to.join(", ")}\n`;
+  if (post.publish_language) result += `• Idioma: ${post.publish_language}\n`;
+  if (post.scheduled_at) result += `• Agendado: ${post.scheduled_at}\n`;
+
+  if (post.postsyncer_post_id) {
+    try {
+      const remote = await postsyncerGetPost(post.postsyncer_post_id);
+      result += `\n*Estado en PostSyncer:*\n• ID: \`${remote.id}\`\n`;
+      if (remote.status) result += `• Status: ${remote.status}\n`;
+      if (remote.published_at) result += `• Publicado: ${remote.published_at}\n`;
+      if (remote.scheduled_at) result += `• Agendado: ${remote.scheduled_at}\n`;
+    } catch (e) {
+      result += `\n_No pude consultar PostSyncer: ${e instanceof Error ? e.message : "error"}_`;
+    }
+  } else {
+    result += "\n_Aún no enviado a PostSyncer._";
+  }
+  return result;
+}
+
 // --- Command parser ---
 
 function parseCommand(text: string): SlackAction | null {
@@ -541,6 +769,36 @@ function parseCommand(text: string): SlackAction | null {
   const borrarMatch = text.match(/^\/borrar-imagen\s+([a-f0-9-]+)/i);
   if (borrarMatch) return { intent: "delete_image", content_item_id: borrarMatch[1] };
 
+  // PostSyncer commands
+  const aprobarMatch = text.match(/^\/aprobar\s+([a-f0-9-]+)\s*$/i);
+  if (aprobarMatch) return { intent: "approve_post", post_id: aprobarMatch[1] };
+
+  if (/^\/redes\s*$/i.test(text)) return { intent: "list_social_accounts" };
+
+  const estadoMatch = text.match(/^\/estado\s+([a-f0-9-]+)\s*$/i);
+  if (estadoMatch) return { intent: "post_status", post_id: estadoMatch[1] };
+
+  const publicarMatch = text.match(/^\/publicar\s+(.+)/i);
+  if (publicarMatch) {
+    const args = publicarMatch[1];
+    const cuandoMatch = args.match(/--cuando\s+(?:"([^"]+)"|(\S+))/i);
+    const idiomaMatch = args.match(/--idioma\s+(en|es)/i);
+    const cuentaMatch = args.match(/--cuenta\s+([\d,\s]+?)(?=\s--|$)/i);
+    const cleaned = args
+      .replace(/--cuando\s+(?:"[^"]+"|\S+)/gi, "")
+      .replace(/--idioma\s+(?:en|es)/gi, "")
+      .replace(/--cuenta\s+[\d,\s]+/gi, "")
+      .trim();
+    const parts = cleaned.split(/\s+/).filter(Boolean);
+    return {
+      intent: "publish_post",
+      post_id: parts[0],
+      publish_target: cuentaMatch?.[1]?.trim() || parts[1],
+      publish_language: (idiomaMatch?.[1].toLowerCase() as Language) || undefined,
+      publish_when: cuandoMatch?.[1] || cuandoMatch?.[2],
+    };
+  }
+
   return null;
 }
 
@@ -570,6 +828,14 @@ const HELP_MESSAGE = `*Comandos disponibles:*
 *Cuentas:*
 • \`/cuenta [slug]\` — Cambia cuenta activa
 • \`/cuentas\` — Lista cuentas disponibles
+
+*Publicación (PostSyncer):*
+• \`/aprobar [ID]\` — Marca el post como listo para publicar
+• \`/redes\` — Lista cuentas conectadas (LinkedIn, X) con sus IDs
+• \`/publicar [ID] [linkedin|x|ambas] --idioma [en|es]\` — Publica ahora
+• \`/publicar [ID] linkedin --idioma es --cuando "2026-04-28 10:00"\` — Agenda
+• \`/publicar [ID] --cuenta 6495 --idioma es\` — A una cuenta específica
+• \`/estado [ID]\` — Estado del post (local + PostSyncer)
 
 *Otros:*
 • \`/noticias\` — Noticias relevantes
@@ -697,6 +963,23 @@ export async function processSlackMessage(
         case "delete_image":
           if (!command.content_item_id) return { text: "Necesito el ID. Ejemplo: `/borrar-imagen abc123`" };
           return { text: await handleDeleteImage(command.content_item_id) };
+
+        case "approve_post":
+          if (!command.post_id) return { text: "Necesito el ID. Ejemplo: `/aprobar abc123`" };
+          return { text: await handleApprovePost(command.post_id) };
+
+        case "list_social_accounts":
+          return { text: await handleListSocialAccounts() };
+
+        case "publish_post":
+          if (!command.post_id) return { text: "Necesito el ID del post. Ejemplo: `/publicar abc123 linkedin --idioma es`" };
+          return {
+            text: await handlePublishPost(command.post_id, command.publish_target, command.publish_language, command.publish_when),
+          };
+
+        case "post_status":
+          if (!command.post_id) return { text: "Necesito el ID. Ejemplo: `/estado abc123`" };
+          return { text: await handlePostStatus(command.post_id) };
       }
     }
 
@@ -733,6 +1016,19 @@ export async function processSlackMessage(
       case "delete_image":
         if (!action.content_item_id) return { text: "Necesito el ID de la imagen." };
         return { text: await handleDeleteImage(action.content_item_id) };
+      case "approve_post":
+        if (!action.post_id) return { text: "Necesito el ID del post a aprobar." };
+        return { text: await handleApprovePost(action.post_id) };
+      case "list_social_accounts":
+        return { text: await handleListSocialAccounts() };
+      case "publish_post":
+        if (!action.post_id) return { text: "Necesito el ID del post para publicar." };
+        return {
+          text: await handlePublishPost(action.post_id, action.publish_target, action.publish_language, action.publish_when),
+        };
+      case "post_status":
+        if (!action.post_id) return { text: "Necesito el ID del post." };
+        return { text: await handlePostStatus(action.post_id) };
       case "general_chat":
       default:
         return { text: await handleGeneralChat(cleanText) };
