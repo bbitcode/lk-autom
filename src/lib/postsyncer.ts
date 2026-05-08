@@ -112,11 +112,12 @@ export async function createPost(input: CreatePostInput): Promise<PostsyncerPost
   };
 
   if (input.scheduledAt) {
-    // Omitting `timezone` makes PostSyncer use the workspace timezone, which is
-    // what we want: the user types times in Bogota and the workspace is Bogota.
-    // Sending an explicit "America/Bogota" caused PostSyncer to misinterpret it
-    // as UTC-8, putting posts 3 hours later than the user asked for.
-    body.scheduled_at = {
+    // The endpoint reference says `scheduled_at` but the working field name is
+    // actually `schedule_for` (only documented in the Quick Start example). The
+    // wrong name was being silently accepted as "queue this post" so every
+    // scheduled post landed in the next workspace queue slot regardless of the
+    // time the user asked for.
+    body.schedule_for = {
       date: input.scheduledAt.date,
       time: input.scheduledAt.time,
     };
